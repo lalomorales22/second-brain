@@ -167,6 +167,7 @@ class MemoryLabApp(tk.Tk):
         self.base_url_var = tk.StringVar(value=DEFAULT_OLLAMA_URL)
         self.status_var = tk.StringVar(value="ready")
         self.log_queue: queue.Queue[str] = queue.Queue()
+        self._ollama_models: List[str] = []
 
         self.memory: Optional[Memory] = None
         self.current_scene: Dict[str, Any] = {}
@@ -174,6 +175,7 @@ class MemoryLabApp(tk.Tk):
         self._init_memory()
         self._configure_style()
         self._build_ui()
+        self._fetch_ollama_models()  # populate dropdowns on launch
         self.after(180, self._drain_log)
 
     # -----------------------------------------------------------------
@@ -189,6 +191,53 @@ class MemoryLabApp(tk.Tk):
             )
         except Exception:
             self.memory = Memory()
+
+    # -----------------------------------------------------------------
+    # Ollama model discovery
+    # -----------------------------------------------------------------
+
+    def _fetch_ollama_models(self):
+        """Fetch installed Ollama models and populate the dropdowns."""
+        def worker():
+            try:
+                url = self.base_url_var.get().strip().rstrip("/")
+                req = urllib.request.Request(f"{url}/tags", method="GET")
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+                models = sorted(
+                    [m.get("name", "") for m in data.get("models", []) if m.get("name")],
+                    key=str.lower,
+                )
+                self._ollama_models = models
+                self.after(0, lambda: self._update_model_dropdowns(models))
+                self._log(f"found {len(models)} ollama models")
+            except Exception as e:
+                self._log(f"could not fetch models: {e}")
+                self.after(0, lambda: self._update_model_dropdowns([]))
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _update_model_dropdowns(self, models: List[str]):
+        """Update both combobox dropdowns with the fetched model list."""
+        self.chat_model_combo["values"] = models
+        self.embed_model_combo["values"] = models
+        # Keep current selection if it's still valid, otherwise don't change
+        if models:
+            if self.chat_model_var.get() not in models:
+                # Try to find a reasonable chat default
+                for hint in ["gemma3", "llama", "mistral", "qwen"]:
+                    match = next((m for m in models if hint in m.lower()), None)
+                    if match:
+                        self.chat_model_var.set(match)
+                        break
+                else:
+                    self.chat_model_var.set(models[0])
+            if self.embed_model_var.get() not in models:
+                # Try to find a reasonable embed default
+                for hint in ["minilm", "embed", "nomic"]:
+                    match = next((m for m in models if hint in m.lower()), None)
+                    if match:
+                        self.embed_model_var.set(match)
+                        break
 
     # -----------------------------------------------------------------
     # Style
@@ -215,6 +264,10 @@ class MemoryLabApp(tk.Tk):
                      rowheight=26, borderwidth=0)
         s.map("Treeview", background=[("selected", "#262a31")])
         s.configure("Treeview.Heading", background="#121318", foreground="#ffffff", relief="flat")
+        s.configure("TCombobox", fieldbackground="#111214", background="#111214",
+                     foreground="#ffffff", selectbackground="#262a31", selectforeground="#ffffff")
+        s.map("TCombobox", fieldbackground=[("readonly", "#111214")],
+              foreground=[("readonly", "#ffffff")])
 
     # -----------------------------------------------------------------
     # UI build
@@ -236,9 +289,12 @@ class MemoryLabApp(tk.Tk):
         right_top = ttk.Frame(top)
         right_top.pack(side="right")
         ttk.Label(right_top, text="chat model").grid(row=0, column=0, sticky="e", padx=4)
-        ttk.Entry(right_top, textvariable=self.chat_model_var, width=16).grid(row=0, column=1, padx=4)
+        self.chat_model_combo = ttk.Combobox(right_top, textvariable=self.chat_model_var, width=22, state="normal")
+        self.chat_model_combo.grid(row=0, column=1, padx=4)
         ttk.Label(right_top, text="embed model").grid(row=0, column=2, sticky="e", padx=4)
-        ttk.Entry(right_top, textvariable=self.embed_model_var, width=16).grid(row=0, column=3, padx=4)
+        self.embed_model_combo = ttk.Combobox(right_top, textvariable=self.embed_model_var, width=22, state="normal")
+        self.embed_model_combo.grid(row=0, column=3, padx=4)
+        ttk.Button(right_top, text="\u21bb models", command=self._fetch_ollama_models).grid(row=0, column=4, padx=4)
 
         # Tabs
         nb = ttk.Notebook(root)
