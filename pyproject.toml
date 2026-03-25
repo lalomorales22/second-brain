@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "semantic-gravity-memory"
+version = "0.1.0"
+description = "A living memory system for AI — structured crystals, temporal gravity, spreading activation, contradiction tracking, and consolidation. Zero external dependencies."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [{ name = "Semantic Gravity Labs" }]
+keywords = ["memory", "ai", "semantic", "knowledge-graph", "local-first"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+[project.optional-dependencies]
+gui = []  # tkinter is stdlib — listed here so pip install .[gui] works
+
+[project.scripts]
+semantic-gravity-lab = "semantic_gravity_memory.gui.app:main"
+
+[tool.setuptools.packages.find]
+include = ["semantic_gravity_memory*"]

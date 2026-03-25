@@ -1,0 +1,7 @@
+# This project uses only Python standard library modules.
+# No third-party pip packages are required.
+#
+# You still need these system/runtime dependencies outside pip:
+# - Python 3.10+
+# - tkinter support in your Python install
+# - Ollama installed and running locally
