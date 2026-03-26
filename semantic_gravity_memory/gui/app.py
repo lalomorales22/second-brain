@@ -34,7 +34,7 @@ from semantic_gravity_memory.utils import now_iso, summarize_text, safe_json_dum
 APP_TITLE = "semantic gravity memory lab"
 APP_DIR = os.path.join(os.path.expanduser("~"), ".semantic_gravity_memory")
 EXPORT_DIR = os.path.join(APP_DIR, "exports")
-DEFAULT_CHAT_MODEL = "gemma3"
+DEFAULT_CHAT_MODEL = "gpt-oss:20b"
 DEFAULT_EMBED_MODEL = "all-minilm"
 DEFAULT_OLLAMA_URL = "http://localhost:11434/api"
 
@@ -224,7 +224,7 @@ class MemoryLabApp(tk.Tk):
         if models:
             if self.chat_model_var.get() not in models:
                 # Try to find a reasonable chat default
-                for hint in ["gemma3", "llama", "mistral", "qwen"]:
+                for hint in ["gpt-oss", "llama", "mistral", "gemma", "qwen"]:
                     match = next((m for m in models if hint in m.lower()), None)
                     if match:
                         self.chat_model_var.set(match)

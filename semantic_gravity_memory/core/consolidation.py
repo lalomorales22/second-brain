@@ -30,6 +30,7 @@ from semantic_gravity_memory.core.temporal import (
     crystal_strength,
     decay_all_crystals,
     auto_cluster,
+    gravitational_mass,
 )
 from semantic_gravity_memory.utils import (
     cosine_similarity,
@@ -122,6 +123,9 @@ class Consolidator:
 
         clustered = auto_cluster(self.storage, self.cluster_window_hours)
         log["clustering"] = {"new_relations": clustered}
+
+        recomputed = self._recompute_masses(ts)
+        log["gravity"] = {"recomputed": recomputed}
 
         self._save_log(log)
         return log
@@ -375,6 +379,23 @@ class Consolidator:
             evicted += 1
 
         return evicted
+
+    # -----------------------------------------------------------------
+    # 7. Gravitational mass recomputation
+    # -----------------------------------------------------------------
+
+    def _recompute_masses(self, now_ts: str) -> int:
+        """Recompute gravitational mass for all active crystals.
+
+        This determines each crystal's retrieval tier — heavy crystals
+        are always accessible (inner orbit), light ones need stronger cues.
+        """
+        active = [c for c in self.storage.all_crystals() if not c.valid_to_ts and c.id is not None]
+        mass_map = {}
+        for c in active:
+            mass_map[c.id] = gravitational_mass(c, now_ts=now_ts)
+        self.storage.update_crystal_masses(mass_map)
+        return len(mass_map)
 
     # -----------------------------------------------------------------
     # Log

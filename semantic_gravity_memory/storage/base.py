@@ -7,7 +7,7 @@ Every storage backend (SQLite, Postgres, in-memory) must implement this.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from semantic_gravity_memory.models import (
     Activation,
@@ -83,6 +83,28 @@ class BaseStorage(ABC):
     @abstractmethod
     def recent_crystals(self, limit: int = 50) -> List[Crystal]:
         """Most recent crystals, newest first."""
+        ...
+
+    # -- Gravitational retrieval ----------------------------------------------
+
+    @abstractmethod
+    def crystals_by_entity_ids(self, entity_ids: List[int], limit: int = 50) -> List[Crystal]:
+        """Active crystals connected to any of the given entity IDs via relations."""
+        ...
+
+    @abstractmethod
+    def top_crystals_by_mass(self, limit: int = 50) -> List[Crystal]:
+        """Heaviest active crystals by pre-computed gravitational mass."""
+        ...
+
+    @abstractmethod
+    def update_crystal_masses(self, mass_map: Dict[int, float]) -> None:
+        """Batch-update gravitational mass for crystals. {crystal_id: mass}."""
+        ...
+
+    @abstractmethod
+    def entity_names_and_ids(self) -> List[Tuple[int, str]]:
+        """All (entity_id, entity_name) pairs, ordered by salience desc."""
         ...
 
     # -- Relations ------------------------------------------------------------

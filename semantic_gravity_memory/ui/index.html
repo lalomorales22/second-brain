@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Second Brain</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<!-- Top bar -->
+<header id="topbar">
+  <div class="topbar-left">
+    <h1>second brain</h1>
+    <span class="tagline">crystals &middot; spreading activation &middot; temporal gravity</span>
+  </div>
+  <div class="topbar-right">
+    <label>chat <select id="chat-model"></select></label>
+    <label>embed <select id="embed-model"></select></label>
+    <button id="btn-refresh-models" title="Refresh models">&#x21bb;</button>
+    <button id="btn-consolidate">consolidate</button>
+    <button id="btn-stats">stats</button>
+  </div>
+</header>
+
+<!-- Main layout -->
+<div id="app">
+  <!-- 3D viewport -->
+  <div id="viewport">
+    <canvas id="brain-canvas"></canvas>
+    <!-- Floating info on hover -->
+    <div id="tooltip" class="hidden"></div>
+    <!-- Status overlay -->
+    <div id="status-overlay">
+      <span id="status-text">initializing...</span>
+    </div>
+    <!-- Node count -->
+    <div id="node-count"></div>
+  </div>
+
+  <!-- Right panel -->
+  <div id="panel">
+    <!-- Tabs -->
+    <div id="panel-tabs">
+      <button class="tab active" data-tab="chat">chat</button>
+      <button class="tab" data-tab="scene">scene</button>
+      <button class="tab" data-tab="details">details</button>
+    </div>
+
+    <!-- Chat tab -->
+    <div id="tab-chat" class="tab-content active">
+      <div id="chat-history"></div>
+      <div id="chat-input-area">
+        <textarea id="chat-input" placeholder="type a message..." rows="3"></textarea>
+        <div id="chat-buttons">
+          <button id="btn-send">send</button>
+          <button id="btn-ingest">ingest only</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Scene tab -->
+    <div id="tab-scene" class="tab-content">
+      <pre id="scene-json"></pre>
+    </div>
+
+    <!-- Details tab -->
+    <div id="tab-details" class="tab-content">
+      <pre id="detail-json">click a node to see details</pre>
+    </div>
+  </div>
+</div>
+
+<!-- Stats modal -->
+<div id="stats-modal" class="modal hidden">
+  <div class="modal-content">
+    <button class="modal-close">&times;</button>
+    <h2>memory stats</h2>
+    <pre id="stats-json"></pre>
+  </div>
+</div>
+
+<!-- Three.js from CDN -->
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.161.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.161.0/examples/jsm/"
+  }
+}
+</script>
+<script type="module" src="/static/brain.js"></script>
+</body>
+</html>

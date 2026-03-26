@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from semantic_gravity_memory.models import (
     Activation,
@@ -188,6 +188,13 @@ class SQLiteBackend(BaseStorage):
             """
         )
         self.conn.commit()
+        # Gravitational mass column (added in v0.2 — safe to re-run)
+        try:
+            self.conn.execute("ALTER TABLE crystals ADD COLUMN grav_mass REAL DEFAULT 0")
+            self.conn.execute("CREATE INDEX IF NOT EXISTS idx_crystals_mass ON crystals(grav_mass DESC)")
+            self.conn.commit()
+        except sqlite3.OperationalError:
+            pass  # Column already exists
 
     # -----------------------------------------------------------------
     # Row ↔ Model converters
@@ -507,6 +514,50 @@ class SQLiteBackend(BaseStorage):
             "SELECT * FROM crystals ORDER BY id DESC LIMIT ?", (limit,)
         ).fetchall()
         return [self._row_to_crystal(r) for r in rows]
+
+    # -----------------------------------------------------------------
+    # Gravitational retrieval
+    # -----------------------------------------------------------------
+
+    def crystals_by_entity_ids(self, entity_ids: List[int], limit: int = 50) -> List[Crystal]:
+        if not entity_ids:
+            return []
+        ph = ",".join("?" * len(entity_ids))
+        rows = self.conn.execute(
+            f"""SELECT DISTINCT c.* FROM crystals c
+                JOIN relations r ON (
+                    (r.source_type='crystal' AND r.source_id=c.id
+                     AND r.target_type='entity' AND r.target_id IN ({ph}))
+                    OR
+                    (r.target_type='crystal' AND r.target_id=c.id
+                     AND r.source_type='entity' AND r.source_id IN ({ph}))
+                )
+                WHERE c.valid_to_ts IS NULL
+                ORDER BY c.id DESC LIMIT ?""",
+            (*entity_ids, *entity_ids, limit),
+        ).fetchall()
+        return [self._row_to_crystal(r) for r in rows]
+
+    def top_crystals_by_mass(self, limit: int = 50) -> List[Crystal]:
+        rows = self.conn.execute(
+            "SELECT * FROM crystals WHERE valid_to_ts IS NULL ORDER BY grav_mass DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return [self._row_to_crystal(r) for r in rows]
+
+    def update_crystal_masses(self, mass_map: Dict[int, float]) -> None:
+        if not mass_map:
+            return
+        with self._lock:
+            for cid, mass in mass_map.items():
+                self.conn.execute("UPDATE crystals SET grav_mass=? WHERE id=?", (mass, cid))
+            self.conn.commit()
+
+    def entity_names_and_ids(self) -> List[Tuple[int, str]]:
+        rows = self.conn.execute(
+            "SELECT id, name FROM entities ORDER BY salience DESC"
+        ).fetchall()
+        return [(int(r["id"]), r["name"]) for r in rows]
 
     # -----------------------------------------------------------------
     # Relations

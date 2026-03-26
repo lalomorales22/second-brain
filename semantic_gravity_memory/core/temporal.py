@@ -429,7 +429,52 @@ def belief_at_version(
 
 
 # =========================================================================
-# 7. Batch helpers (for consolidation / daemon use)
+# 7. Gravitational Mass (pre-computed retrieval tier)
+# =========================================================================
+
+
+def gravitational_mass(
+    crystal: Crystal,
+    now_ts: Optional[str] = None,
+) -> float:
+    """Compute a crystal's gravitational mass for retrieval tiering.
+
+    Heavy crystals are always accessible (inner orbit). Light crystals
+    require stronger cues to awaken. Mass is pre-computed during
+    consolidation and stored, not computed at query time.
+
+    mass = (salience + reinforcement + recency_boost) * (1 - decay_penalty)
+
+    This mirrors base-level activation in ACT-R: frequently accessed,
+    salient, recently used memories have higher resting activation.
+    """
+    import math
+
+    # Salience contribution (0-1 range)
+    sal = crystal.salience.combined()
+
+    # Reinforcement from access (logarithmic — diminishing returns)
+    reinforcement = math.log1p(crystal.access_count) * 0.15
+
+    # Recency contribution
+    ref_ts = crystal.last_accessed_ts or crystal.created_ts
+    rec = recency_score(ref_ts, now_ts=now_ts, half_life_hours=72.0) if ref_ts else 0.0
+
+    # Confidence weight
+    conf = crystal.confidence
+
+    # Semantic crystals get a permanence bonus (they've been graduated)
+    type_bonus = 0.15 if crystal.memory_type == "semantic" else 0.0
+
+    # Decay penalty (high decay rate + old = lighter)
+    decay_penalty = crystal.decay_rate * (1.0 - rec) * 0.4
+
+    mass = (sal * conf + reinforcement + rec * 0.3 + type_bonus) * (1.0 - decay_penalty)
+    return clamp(mass)
+
+
+# =========================================================================
+# 8. Batch helpers (for consolidation / daemon use)
 # =========================================================================
 
 

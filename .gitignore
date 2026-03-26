@@ -1,3 +1,4 @@
+# Python
 __pycache__/
 *.pyc
 *.pyo
@@ -5,6 +6,32 @@ __pycache__/
 dist/
 build/
 .eggs/
-*.db
+*.egg
 .venv/
+venv/
+env/
+
+# Data — each user starts fresh
+*.db
+*.sqlite
+*.sqlite3
+exports/
+*.json.bak
+
+# Environment & secrets
 .env
+.env.*
+
+# OS
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# IDE
+.vscode/
+.idea/
+*.sublime-*
+
+# Claude Code memory
+.claude/

@@ -27,6 +27,8 @@ gui = []  # tkinter is stdlib — listed here so pip install .[gui] works
 
 [project.scripts]
 semantic-gravity-lab = "semantic_gravity_memory.gui.app:main"
+semantic-gravity-brain = "semantic_gravity_memory.api.server:main"
+second-brain = "semantic_gravity_memory.api.server:main"
 
 [tool.setuptools.packages.find]
 include = ["semantic_gravity_memory*"]
