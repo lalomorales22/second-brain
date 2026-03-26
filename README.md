@@ -1,4 +1,5 @@
 # Second Brain
+<img width="1263" height="830" alt="Screenshot 2026-03-25 at 11 54 14 PM" src="https://github.com/user-attachments/assets/5d4b5cb1-bbfe-49f0-b159-889e8bb2bb90" />
 
 A living memory system for AI. Structured crystals, temporal gravity, spreading activation, contradiction tracking, background consolidation, and a **3D brain visualization** you can fly through.
 
