@@ -38,13 +38,30 @@ This is not RAG. This is not a vector store with a chat wrapper.
 
 ## Install
 
+### One-liner (from anywhere)
+
 ```bash
+pip install git+https://github.com/lalomorales22/second-brain.git
+```
+
+Then use it in your own code:
+
+```python
+from semantic_gravity_memory import Memory
+memory = Memory()
+```
+
+### Full setup (with 3D brain + terminal command)
+
+```bash
+git clone https://github.com/lalomorales22/second-brain.git
+cd second-brain
 chmod +x install.sh && ./install.sh
 ```
 
 This checks Python, installs the package, sets up the `second-brain` command, checks Ollama, and pulls an embedding model if needed.
 
-Or manually:
+### Manual
 
 ```bash
 pip install -e .                    # or: pip install --user --break-system-packages -e .
@@ -102,6 +119,31 @@ answer, scene = memory.answer(
     chat_fn=lambda prompt: your_llm_call(prompt),
 )
 ```
+
+### Drop it into any app
+
+Second Brain is a library, not just a UI. Three lines to give any chatbot, agent, or app persistent memory that actually behaves like memory:
+
+```python
+pip install git+https://github.com/lalomorales22/second-brain.git
+```
+
+```python
+from semantic_gravity_memory import Memory
+
+# In your chatbot / agent / app
+memory = Memory(ollama_model="all-minilm")
+
+# Every conversation turn
+memory.ingest(user_message)
+scene = memory.recall(user_message)  # top 8 relevant crystals
+# Feed scene["crystals"] into your LLM prompt as context
+
+# Run periodically — the brain tidies itself
+memory.consolidate()
+```
+
+Works with any LLM, any framework, any language that can call Python. The 3D brain is optional — the engine stands alone.
 
 ## How it works
 
