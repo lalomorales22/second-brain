@@ -69,11 +69,50 @@ const IDLE_DRIFT_SPEED = 0.03;
 // Init
 // =========================================================================
 
+let webglAvailable = false;
+
 function init() {
+  // UI and data loading work without WebGL — always set these up
+  setupUI();
+  loadModels();
+
+  // Try to init 3D — if WebGL isn't available, the chat/API still works
+  try {
+    init3D();
+    webglAvailable = true;
+    loadGraph();
+    setStatus('ready');
+    animate();
+  } catch (e) {
+    console.warn('WebGL not available:', e.message);
+    webglAvailable = false;
+    setStatus('chat ready (3D disabled — no WebGL)');
+
+    // Show a message in the viewport
+    const vp = document.getElementById('viewport');
+    const msg = document.createElement('div');
+    msg.style.cssText = 'position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);color:#8888aa;text-align:center;font-size:14px;max-width:400px;line-height:1.6;';
+    msg.innerHTML = `
+      <div style="font-size:20px;margin-bottom:12px;">3D brain unavailable</div>
+      <div>WebGL could not initialize on this device.</div>
+      <div style="margin-top:8px;">Chat and memory still work — use the panel on the right.</div>
+      <div style="margin-top:12px;color:#6666aa;font-size:12px;">
+        To see the 3D brain, try:<br>
+        &bull; Chrome with --ignore-gpu-blocklist flag<br>
+        &bull; Firefox (often better WebGL on Linux)<br>
+        &bull; Open from another device on your network
+      </div>
+    `;
+    vp.style.position = 'relative';
+    vp.appendChild(msg);
+  }
+}
+
+function init3D() {
   const canvas = document.getElementById('brain-canvas');
   const vp = document.getElementById('viewport');
 
-  // Renderer
+  // Renderer — this throws if WebGL is not available
   renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false });
   renderer.setSize(vp.clientWidth, vp.clientHeight);
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -130,19 +169,6 @@ function init() {
   window.addEventListener('resize', onResize);
   renderer.domElement.addEventListener('mousemove', onMouseMove);
   renderer.domElement.addEventListener('click', onClick);
-
-  // UI
-  setupUI();
-
-  // Load data
-  loadGraph();
-  loadModels();
-
-  // Status
-  setStatus('ready');
-
-  // Start render loop
-  animate();
 }
 
 // =========================================================================
@@ -172,6 +198,7 @@ function createStarfield() {
 // =========================================================================
 
 async function loadGraph() {
+  if (!webglAvailable) return;
   setStatus('loading graph...');
   try {
     const resp = await fetch(`${API}/api/graph?crystal_limit=100&entity_limit=50`);
@@ -449,6 +476,7 @@ function applyIdleDrift(time) {
 // =========================================================================
 
 function highlightScene(sceneData) {
+  if (!webglAvailable) return;
   // Reset all nodes
   activeNodeIds.clear();
   for (const n of nodes) {
@@ -822,8 +850,10 @@ async function sendChat() {
     if (!answerText) msgDiv.remove();
 
     // Reload graph and re-highlight
-    await loadGraph();
-    if (lastScene) highlightScene(lastScene);
+    if (webglAvailable) {
+      await loadGraph();
+      if (lastScene) highlightScene(lastScene);
+    }
 
     setStatus('ready');
   } catch (e) {
@@ -849,7 +879,7 @@ async function ingestOnly() {
     });
     const data = await resp.json();
     appendChat('system', `ingested \u2192 crystal #${data.crystal_id}`, 'system');
-    await loadGraph();
+    if (webglAvailable) await loadGraph();
     setStatus('ready');
   } catch (e) {
     appendChat('system', `error: ${e.message}`, 'system');
@@ -863,7 +893,7 @@ async function consolidate() {
     const resp = await fetch(`${API}/api/consolidate`, { method: 'POST' });
     const data = await resp.json();
     appendChat('system', `consolidation done: ${JSON.stringify(data)}`, 'system');
-    await loadGraph();
+    if (webglAvailable) await loadGraph();
     setStatus('ready');
   } catch (e) {
     setStatus('error');
@@ -959,6 +989,7 @@ function randomSpherePoint(radius) {
 }
 
 function onResize() {
+  if (!webglAvailable) return;
   const vp = document.getElementById('viewport');
   camera.aspect = vp.clientWidth / vp.clientHeight;
   camera.updateProjectionMatrix();
