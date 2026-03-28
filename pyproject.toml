@@ -32,3 +32,6 @@ second-brain = "semantic_gravity_memory.api.server:main"
 
 [tool.setuptools.packages.find]
 include = ["semantic_gravity_memory*"]
+
+[tool.setuptools.package-data]
+"semantic_gravity_memory" = ["ui/*.html", "ui/*.js", "ui/*.css"]

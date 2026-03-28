@@ -33,7 +33,7 @@ from urllib.parse import parse_qs, urlparse
 from semantic_gravity_memory import Memory
 from semantic_gravity_memory.utils import now_iso
 
-UI_DIR = os.path.join(os.path.dirname(__file__), "..", "ui")
+UI_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "ui"))
 DEFAULT_PORT = 8487
 DEFAULT_OLLAMA_URL = "http://localhost:11434/api"
 
