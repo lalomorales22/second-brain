@@ -403,6 +403,18 @@ All memory data is stored in `~/.semantic_gravity_memory/memory.db` (SQLite). Ea
 - Optional: tkinter for the desktop GUI
 - Three.js is loaded from CDN (no npm/node needed)
 
+### WebGL on Linux
+
+The 3D brain requires WebGL. On some Linux systems (especially ARM devices like NVIDIA Jetson, Raspberry Pi, or machines with software rendering), the browser may block WebGL by default. If the 3D view shows "3D brain unavailable", chat and memory still work — only the visualization is affected.
+
+Fixes:
+- **Chrome/Chromium**: launch with `--ignore-gpu-blocklist --enable-gpu-rasterization --enable-webgl`
+- **Chrome flags**: go to `chrome://flags/#ignore-gpu-blocklist` and enable it, then restart
+- **Firefox**: often has better WebGL support on Linux — try `firefox http://localhost:8487`
+- **Access from another device**: `second-brain` binds to `0.0.0.0`, so you can open `http://<your-ip>:8487` from a phone, tablet, or another computer on your network
+
+macOS and Windows typically have no WebGL issues.
+
 ## Tests
 
 ```bash
