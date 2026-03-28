@@ -554,22 +554,91 @@ class ThreadedHTTPServer(HTTPServer):
             self.shutdown_request(request)
 
 
-def run(port: int = DEFAULT_PORT, ollama_url: str = DEFAULT_OLLAMA_URL,
-        embed_model: str = "all-minilm", chat_model: str = "gpt-oss:20b"):
-    _state["ollama_url"] = ollama_url
-    _state["chat_model"] = chat_model
-    _state["embed_model"] = embed_model
+def _detect_models(ollama_url: str):
+    """Auto-detect embed and chat models from what Ollama has installed.
 
+    Preferred embed models (in order): all-minilm, nomic-embed-text, any *embed*.
+    Preferred chat models (in order): llama, gemma, mistral, ministral, deepseek,
+    granite, qwen, phi — then fall back to first non-embed model.
+    """
     try:
-        _state["memory"] = Memory(ollama_model=embed_model, ollama_url=ollama_url)
+        models = ollama_models(ollama_url)
     except Exception:
-        print("[warn] could not init with embeddings, falling back to no-embedding mode")
+        return None, None
+
+    if not models:
+        return None, None
+
+    models_lower = [(m, m.lower()) for m in models]
+
+    # --- Embed model ---
+    embed_prefs = ["all-minilm", "minilm", "nomic-embed", "embed"]
+    embed_model = None
+    for pref in embed_prefs:
+        for name, low in models_lower:
+            if pref in low:
+                embed_model = name
+                break
+        if embed_model:
+            break
+
+    # --- Chat model ---
+    # Exclude known non-chat models (embed, flux, ocr-only)
+    skip_patterns = ["embed", "flux", "klein"]
+    chat_candidates = [
+        (name, low) for name, low in models_lower
+        if not any(s in low for s in skip_patterns)
+    ]
+
+    chat_prefs = ["llama", "gemma", "mistral", "ministral", "deepseek",
+                  "granite", "qwen", "phi", "lfm"]
+    chat_model = None
+    for pref in chat_prefs:
+        for name, low in chat_candidates:
+            if pref in low:
+                chat_model = name
+                break
+        if chat_model:
+            break
+
+    # Fallback: first chat candidate
+    if not chat_model and chat_candidates:
+        chat_model = chat_candidates[0][0]
+
+    return embed_model, chat_model
+
+
+def run(port: int = DEFAULT_PORT, ollama_url: str = DEFAULT_OLLAMA_URL,
+        embed_model: Optional[str] = None, chat_model: Optional[str] = None):
+    _state["ollama_url"] = ollama_url
+
+    # Auto-detect models if not explicitly provided
+    detected_embed, detected_chat = _detect_models(ollama_url)
+
+    if embed_model is None:
+        embed_model = detected_embed
+    if chat_model is None:
+        chat_model = detected_chat
+
+    _state["chat_model"] = chat_model or ""
+    _state["embed_model"] = embed_model or ""
+
+    if embed_model:
+        try:
+            _state["memory"] = Memory(ollama_model=embed_model, ollama_url=ollama_url)
+        except Exception:
+            print(f"[warn] could not init with '{embed_model}', falling back to no-embedding mode")
+            _state["memory"] = Memory()
+    else:
+        print("[info] no embedding model found — running without embeddings")
         _state["memory"] = Memory()
 
     server = ThreadedHTTPServer(("0.0.0.0", port), BrainHandler)
-    print(f"\n  second brain \u2014 3D visualization")
+    print(f"\n  second brain — 3D visualization")
     print(f"  http://localhost:{port}")
-    print(f"  ollama: {ollama_url}  chat: {chat_model}  embed: {embed_model}\n")
+    print(f"  ollama: {ollama_url}")
+    print(f"  embed: {embed_model or '(none)'}")
+    print(f"  chat:  {chat_model or '(none)'}\n")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
@@ -580,11 +649,13 @@ def run(port: int = DEFAULT_PORT, ollama_url: str = DEFAULT_OLLAMA_URL,
 
 def main():
     import argparse
-    parser = argparse.ArgumentParser(description="Second Brain \u2014 3D Web UI")
+    parser = argparse.ArgumentParser(description="Second Brain — 3D Web UI")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--ollama-url", default=DEFAULT_OLLAMA_URL)
-    parser.add_argument("--embed-model", default="all-minilm")
-    parser.add_argument("--chat-model", default="gpt-oss:20b")
+    parser.add_argument("--embed-model", default=None,
+                        help="Ollama embedding model (auto-detected if not set)")
+    parser.add_argument("--chat-model", default=None,
+                        help="Ollama chat model (auto-detected if not set)")
     args = parser.parse_args()
     run(port=args.port, ollama_url=args.ollama_url,
         embed_model=args.embed_model, chat_model=args.chat_model)
