@@ -1,9 +1,9 @@
 # Second Brain
-<img width="1263" height="830" alt="Screenshot 2026-03-25 at 11 54 14 PM" src="https://github.com/user-attachments/assets/5d4b5cb1-bbfe-49f0-b159-889e8bb2bb90" />
+<img width="1263" height="830" alt="Screenshot 2026-03-25 at 11 54 14 PM" src="https://github.com/user-attachments/assets/5d4b5cb1-bbfe-49f0-b159-889e8bb2bb90" />
 
-A living memory system for AI. Structured crystals, temporal gravity, spreading activation, contradiction tracking, background consolidation, and a **3D brain visualization** you can fly through.
+A persistent memory engine for AI agents with a **3D brain visualization** you can explore. Memory records with multi-axis importance scoring, multi-phase retrieval (graph-first, then embeddings), spreading activation, contradiction tracking, temporal decay, and background consolidation.
 
-Zero external Python dependencies. Local-first. Your data never leaves your machine.
+Zero external Python dependencies. Local-first. Everything in one SQLite file. Your data never leaves your machine.
 
 ```bash
 ./install.sh
@@ -26,15 +26,15 @@ This is not RAG. This is not a vector store with a chat wrapper.
 
 | Typical AI memory | Second Brain |
 |---|---|
-| Text chunks in a vector DB | Structured **memory crystals** with 25+ fields |
-| Single relevance score | **6-dimensional salience** (emotional, practical, identity, temporal, uncertainty, novelty) |
-| Overwrite old info silently | Store **contradictions** as tension, resolve later |
-| Flat retrieval by cosine sim | **Gravitational retrieval** — entity gateway, gravity orbits, resonance priming, THEN spreading activation |
-| No time awareness | **Temporal gravity** — decay, reinforcement, episode clustering, prospective memory |
-| Static | **Living** — background consolidation merges, abstracts, decays, graduates, recomputes gravitational mass |
+| Text chunks in a vector DB | Structured memory records (internally called "crystals") with 25+ fields |
+| Single relevance score | Importance scored across 6 axes (emotional, practical, identity, temporal, uncertainty, novelty) via keyword matching with context boosters |
+| Overwrite old info silently | Store **contradictions** as tension — both claims preserved, resolved later |
+| Flat retrieval by cosine sim | **Multi-phase retrieval** — entity gateway, importance tier, recency priming, THEN embedding comparison on ~50 candidates |
+| No time awareness | **Temporal engine** — exponential decay, reinforcement on access, episode clustering, prospective memory |
+| Static | **Background consolidation** — daemon merges, decays, graduates, enforces capacity, recomputes importance |
 | No self-awareness | **Metamemory** — tracks its own retrieval accuracy per domain |
-| No error correction | **Immune system** — antibodies suppress known-bad recall patterns |
-| Terminal or flat dashboard | **3D brain** — Three.js WebGL, bloom, real activation waves, streaming chat |
+| No error correction | **Suppression rules** — context-aware filters block known-bad recall patterns |
+| Terminal or flat dashboard | **3D brain** — Three.js WebGL, bloom, real activation waves driven by actual retrieval data |
 
 ## Install
 
@@ -122,9 +122,9 @@ answer, scene = memory.answer(
 
 ### Drop it into any app
 
-Second Brain is a library, not just a UI. Three lines to give any chatbot, agent, or app persistent memory that actually behaves like memory:
+Second Brain is a library, not just a UI. Three lines to give any chatbot, agent, or app persistent memory:
 
-```python
+```bash
 pip install git+https://github.com/lalomorales22/second-brain.git
 ```
 
@@ -136,10 +136,10 @@ memory = Memory(ollama_model="all-minilm")
 
 # Every conversation turn
 memory.ingest(user_message)
-scene = memory.recall(user_message)  # top 8 relevant crystals
+scene = memory.recall(user_message)  # top 8 relevant memories
 # Feed scene["crystals"] into your LLM prompt as context
 
-# Run periodically — the brain tidies itself
+# Run periodically — the memory tidies itself
 memory.consolidate()
 ```
 
@@ -151,8 +151,8 @@ Works with any LLM, any framework, any language that can call Python. The 3D bra
 You type something
      |
      v
-Text gets crystallized into a structured memory object
-(title, theme, salience, entities, confidence, decay rate...)
+Text gets structured into a memory record
+(title, theme, importance scores, entities, confidence, decay rate...)
      |
      v
 Entities extracted: "Python", "Sarah", "deadline"
@@ -164,77 +164,75 @@ Relations formed in the knowledge graph
 You ask a question later
      |
      v
-Phase 1: Entity Gateway — words in your query activate connected crystals via the graph
-Phase 2: Gravity Orbit — heaviest memories are always on the tip of the tongue
-Phase 3: Resonance Field — recent topics stay primed
+Phase 1: Entity Gateway — words in your query find connected memories via the graph
+Phase 2: Importance Tier — highest-importance memories are always accessible (like tip-of-tongue)
+Phase 3: Recency Cache — recent topics and their neighborhoods stay primed
      |
      v
 ~50 candidates scored with embeddings (not thousands)
      |
      v
-Spreading activation ripples through the graph
+Spreading activation ripples through the graph (BFS with energy decay per hop)
      |
      v
-Top 8 crystals become the "scene" — the AI only sees these, not your whole database
+Top 8 memories become the "scene" — the AI only sees these, not your whole database
      |
      v
-AI responds, response gets crystallized as a new memory
+AI responds, response gets stored as a new memory
 ```
 
-Every node in the 3D visualization corresponds to a real crystal or entity. Every glow reflects real gravitational mass. When nodes light up during a query, those are the actual memories being used.
+Every node in the 3D visualization corresponds to a real memory or entity. Every glow reflects the real importance score. When nodes light up during a query, those are the actual memories being retrieved.
 
 ## 3D Brain Visualization
 
-A web-based Three.js interface that renders your memory as a living neural network. Everything you see is real data — no fake animations.
+A web-based Three.js interface that renders your memory as an explorable graph. Everything you see is real data — no fake animations.
 
 ### What you see
 
-- **Crystal nodes** — glowing spheres sized and brightened by **gravitational mass**. Heavy memories (frequently accessed, high salience) burn bright. Light memories are dim specks. What you see is what the memory actually weighs.
-- **Entity nodes** — smaller icosahedra. Brightness = real mention count and salience.
-- **Edges** — colored by relation type: blue=mentions, green=co-occurred, amber=temporal cluster, red=contradicts. Opacity = real edge weight.
+- **Memory nodes** — glowing spheres sized and brightened by importance score. Frequently accessed, high-salience memories burn bright. Weak ones are dim specks.
+- **Entity nodes** — smaller icosahedra. Brightness = mention count and salience.
+- **Edges** — colored by relation type: blue=mentions, green=co-occurred, amber=temporal cluster, red=contradicts. Opacity = edge weight.
 - **Colors** — blue=builder, gold=founder, green=student, purple=creative, orange=family.
 - **Bloom postprocessing** — UnrealBloomPass gives everything a natural glow.
 - **Orbit controls** — zoom, rotate, pan, slow auto-rotate.
 
 ### What happens when you ask a question
 
-1. **Recall** — the gravitational retrieval engine awakens relevant memories. Activated nodes light up in the graph. Inactive nodes dim. This is real — those are the actual crystals the engine selected.
+1. **Recall** — the retrieval engine surfaces relevant memories. Activated nodes light up. Inactive nodes dim. These are the actual memories the engine selected.
 2. **Activation wave** — energy ripples outward from the active cluster.
 3. **Streaming response** — tokens appear as the AI generates them via Server-Sent Events.
 4. **Thinking** — if the model reasons (e.g. `<think>` tags), thinking appears in a collapsible purple block above the answer.
-5. **Ingestion** — the response is automatically stored as a new crystal.
+5. **Ingestion** — the response is automatically stored as a new memory.
 
 ### What the idle brain shows
 
-At rest, every node sits at its true gravitational mass brightness. No fake pulsing. Heavy memories glow strong. Light ones are dim. Heavier nodes drift less — they're anchored. The resting brain IS a map of what matters most.
+At rest, every node sits at its true importance-score brightness. No fake pulsing. Heavy memories glow strong. Light ones are dim. The resting brain is a map of what matters most in the memory.
 
-## Gravitational Retrieval
+## How retrieval actually works
 
-**Memories aren't searched. They're awakened.**
-
-Traditional RAG loads every vector and compares against all of them. With a large database, that's slow. This system does something different — three phases before any embedding math happens:
+Traditional RAG compares every embedding on every query. When you have hundreds of memories and most aren't relevant, that's wasteful. This system narrows candidates before touching embeddings:
 
 ### Phase 1: Entity Gateway
 
-Extract concept cues from the query text. If you ask about "Python", the system finds the Python entity in the knowledge graph and follows relations to connected crystals. Zero embeddings. Pure graph traversal.
+Extract entity names from the query text. If you ask about "Python", the system finds the Python entity in the knowledge graph and follows relations to connected memories. Zero embeddings. Pure graph traversal.
 
-### Phase 2: Gravity Orbit
+### Phase 2: Importance Tier
 
-Every crystal has a pre-computed **gravitational mass** based on salience, access frequency, recency, and reinforcement. The heaviest crystals are always accessible — like tip-of-tongue memories that don't need to be searched for. Mass is recomputed every consolidation cycle.
+Called "gravity orbit" in the code. Every memory has a pre-computed importance score based on salience, access frequency (logarithmic), recency, confidence, and memory type. The top 30 are always accessible — like frequently-used items at the top of your mind. Score is recomputed every consolidation cycle.
 
 ```
-mass = (salience * confidence + reinforcement + recency + type_bonus) * (1 - decay_penalty)
+importance = (salience * confidence + reinforcement + recency + type_bonus) * (1 - decay_penalty)
 ```
 
-### Phase 3: Resonance Field
+### Phase 3: Recency Cache
 
-Semantic priming across queries. When you recall memories about Python, the entire graph neighborhood stays warm. Follow-up questions about programming, tools, or code are nearly instant because related crystals are already primed. This decays naturally between conversations.
+Called "resonance field" in the code. This is semantic priming: when you recall memories about Python, the entire graph neighborhood stays warm. Follow-up questions about programming, tools, or code benefit because related memories are already in the candidate set. Decays naturally between conversations.
 
 ### Then: Selective Scoring + Spreading Activation
 
-Only after narrowing to ~40-60 candidates does the system compare embeddings. Then spreading activation propagates energy through the graph — crystal to entity to crystal — surfacing associatively related memories, not just keyword matches.
+Only after narrowing to ~40-60 candidates does the system compare embeddings. Then spreading activation propagates energy through the graph — memory to entity to memory — surfacing associatively related results. Spreading activation is a real cognitive science concept (Collins & Loftus, 1975), applied here as BFS with energy decay per hop.
 
-**Result:** Instead of scoring thousands of crystals, the system scores dozens. Scales to massive databases.
+**Result:** Instead of scoring every memory, the system scores dozens. For the personal/agent memory scale this targets (hundreds to low thousands of items), retrieval is fast and context-aware.
 
 ## Architecture
 
@@ -245,22 +243,22 @@ semantic_gravity_memory/
 ├── utils.py                 # Hand-rolled math, time, text helpers
 ├── storage/
 │   ├── base.py              # Abstract storage interface (42 methods)
-│   └── sqlite_backend.py    # SQLite (10 tables, WAL mode, gravitational mass)
+│   └── sqlite_backend.py    # SQLite (10 tables, WAL mode)
 ├── embeddings/
 │   ├── base.py              # Abstract embedder
 │   └── ollama.py            # Ollama HTTP embedder (urllib only)
 ├── core/
 │   ├── engine.py            # MemoryEngine orchestrator
-│   ├── crystal_forge.py     # Text → Crystal pipeline
-│   ├── entity_extractor.py  # 8-pass NLP entity extraction (no spaCy)
-│   ├── salience.py          # 6-dimensional salience scoring
+│   ├── crystal_forge.py     # Text → memory record pipeline
+│   ├── entity_extractor.py  # Multi-pass regex entity extraction (no spaCy)
+│   ├── salience.py          # 6-axis importance scoring (keyword matching + context boosters)
 │   ├── self_state.py        # Self-state detection with learning
 │   ├── contradiction.py     # Preference, factual, temporal conflict detection
-│   ├── temporal.py          # Decay, clustering, gravity, gravitational mass, prospective memory
-│   ├── retrieval.py         # Gravitational retrieval, resonance field, spreading activation
-│   ├── consolidation.py     # Background daemon — merge, decay, graduate, recompute mass
+│   ├── temporal.py          # Decay, clustering, importance scoring, prospective memory
+│   ├── retrieval.py         # Multi-phase retrieval, spreading activation
+│   ├── consolidation.py     # Background daemon — merge, decay, graduate, enforce capacity
 │   ├── metamemory.py        # Per-domain confidence calibration
-│   └── immune.py            # Antibody suppression of known-bad patterns
+│   └── immune.py            # Context-aware suppression of known-bad patterns
 ├── api/
 │   └── server.py            # Stdlib HTTP server, SSE streaming, REST endpoints
 ├── ui/
@@ -273,9 +271,9 @@ semantic_gravity_memory/
 
 ## Core concepts
 
-### Why "crystals"?
+### Memory records ("crystals")
 
-When you type "I had a meeting with Sarah about the API deadline being moved to Friday and I'm stressed about it," that messy sentence gets **crystallized** into a structured object:
+When you type "I had a meeting with Sarah about the API deadline being moved to Friday and I'm stressed about it," that sentence gets structured into a record with 25+ fields:
 
 ```
 title:        "API deadline moved to Friday"
@@ -284,9 +282,9 @@ summary:      "Meeting with Sarah — API deadline shifted to Friday, causing st
 self_state:   "professional"
 memory_type:  "episodic"
 salience:
-  emotional:  0.6    (stress)
-  practical:  0.8    (deadline)
-  temporal:   0.7    (time-sensitive)
+  emotional:  0.6    (stress keywords detected)
+  practical:  0.8    (deadline keywords detected)
+  temporal:   0.7    (time-sensitive keywords detected)
   identity:   0.2
   uncertainty: 0.3
   novelty:    0.4
@@ -295,23 +293,23 @@ confidence:   0.7
 decay_rate:   0.1
 ```
 
-Raw text to structured, multi-dimensional, decay-aware object. Like how a mineral forms from a disordered solution into an organized lattice — the system takes unstructured language and locks it into a shape with defined facets.
+The name "crystal" comes from the process — raw unstructured text compressed into a structured, multi-dimensional object. Like a mineral forming from a disordered solution into an organized lattice.
 
-And like real crystals, they have physical properties:
-- **Mass** — gravitational weight in retrieval (heavy = always accessible)
-- **Decay** — they weaken over time without reinforcement
-- **They merge** — consolidation fuses similar crystals into one
-- **They graduate** — episodic to semantic, like carbon to diamond under pressure
-- **They hold tension** — contradictions are stored, not overwritten
-- **They evolve** — version history tracks how beliefs change
-
-It's not a metaphor slapped on top. The data structure actually behaves like the name implies.
+These records have lifecycle properties:
+- **Importance score** — determines retrieval tier and visual brightness
+- **Decay** — weakens over time without access (Ebbinghaus-style exponential decay)
+- **Merge** — consolidation fuses similar records into one
+- **Graduate** — episodic to semantic after repeated access
+- **Contradiction** — conflicting claims stored as tension, not overwritten
+- **Version history** — tracks how beliefs change over time
 
 ### Events and entities
 
-Every input becomes an **event** (raw record). The entity extractor runs 8 passes to pull out **entities** — tools, people, projects, concepts — and tracks them across conversations. Entities accumulate salience through reinforcement. They are the primary retrieval gateway — when you mention "Python," the system finds the Python entity and walks its graph connections to related crystals before ever comparing embeddings.
+Every input becomes an **event** (raw record). The entity extractor runs multiple regex passes to pull out **entities** — tools, people, projects, concepts — and tracks them across conversations. Entities accumulate salience through reinforcement. They are the primary retrieval gateway — when you mention "Python," the system finds the Python entity and walks its graph connections before ever comparing embeddings.
 
-### Salience vector
+The entity extractor uses: capitalized phrase matching, CamelCase/ALLCAPS detection, a dictionary of ~100 known tech names, quoted string extraction, and frequency-significant fallback. It won't beat spaCy on accuracy, but it works with zero dependencies.
+
+### Importance scoring (6 axes)
 
 Six dimensions capturing *why* something matters:
 - **Emotional** — stress, excitement, personal significance
@@ -321,41 +319,42 @@ Six dimensions capturing *why* something matters:
 - **Uncertainty** — open questions, confusion
 - **Novelty** — new, surprising, first encounter
 
+Scored via keyword matching against curated word lists with context boosters (question marks boost uncertainty, exclamation marks boost emotional, etc.). It's simple pattern matching — not deep NLP — but the axes capture useful signal about the *type* of importance, not just the amount.
+
 ### Self-state
 
-Who the user is *right now* affects what they remember. The system detects self-states (builder, founder, student, creative, family, researcher) from text, learns entity-state associations over time, and can discover entirely new states.
+Who the user is *right now* affects what they remember. The system detects self-states (builder, founder, student, creative, family, researcher) from text using keyword matching, learns entity-state associations over time, and can discover new states from recurring patterns.
 
 ### Contradiction tracking
 
-"I like JavaScript" followed by "I hate JavaScript" doesn't silently overwrite. It creates a **contradiction** record with both claims and evidence. Contradictions can be auto-resolved by consolidation or left as tension for the LLM to acknowledge.
+"I like JavaScript" followed by "I hate JavaScript" doesn't silently overwrite. It creates a **contradiction** record with both claims and evidence. Includes growth detection — "I used to like X, now I prefer Y" is recognized as evolution, not contradiction. Contradictions can be auto-resolved during consolidation (newer claim wins) or left as tension for the LLM to acknowledge.
 
 ### Temporal engine
 
-- **Decay** — crystals weaken over time (exponential decay with reinforcement on access)
-- **Episodes** — time-proximate crystals auto-cluster into episodes
-- **Gravity** — crystals close in time pull each other into recall scenes
-- **Gravitational mass** — pre-computed importance determines retrieval tier and visual brightness
-- **Prospective memory** — future-triggered recall ("remind me about X when Y happens")
-- **Versioning** — crystals track belief evolution with snapshots
+- **Decay** — memories weaken over time (exponential decay, reinforced on access)
+- **Episodes** — time-proximate memories auto-cluster
+- **Importance score** — pre-computed, determines retrieval tier and visual brightness
+- **Prospective memory** — future-triggered recall ("when deployment comes up, surface this memory")
+- **Versioning** — tracks belief evolution with snapshots
 
 ### Consolidation (the heartbeat)
 
-A background daemon runs periodic passes:
-1. **Decay** — mark weak crystals dormant
-2. **Merge** — fuse crystals with >85% embedding similarity
+A background daemon thread runs periodic passes:
+1. **Decay** — mark weak memories dormant
+2. **Merge** — fuse memories with >85% embedding similarity
 3. **Schema extraction** — abstract recurring patterns into templates
 4. **Contradiction resolution** — auto-resolve stale conflicts
 5. **Graduation** — promote frequently-accessed episodic memories to semantic
-6. **Carrying capacity** — enforce a crystal budget, forcing abstraction
-7. **Gravitational mass** — recompute mass for all active crystals
+6. **Carrying capacity** — enforce a memory budget, forcing abstraction through merges
+7. **Importance recomputation** — recalculate scores for retrieval tiering
 
 ### Metamemory
 
-The system tracks its own accuracy. Per-domain confidence scores modulate retrieval scoring. Bad at personal questions? That domain gets weighted down.
+The system tracks its own retrieval accuracy. Per-domain confidence scores (based on user feedback) modulate retrieval scoring. Low-confidence domains get weighted down.
 
-### Immune system
+### Suppression system
 
-Antibodies suppress crystals that previously led to bad answers. Created on user correction, checked before every scene construction.
+Called the "immune system" in the code. When a user flags a bad retrieval, a suppression rule is created with a trigger context. Future queries matching that trigger exclude the suppressed memory. It's a context-aware blocklist — the memory isn't deleted, just filtered out for matching queries.
 
 ## API reference
 
@@ -371,7 +370,7 @@ Antibodies suppress crystals that previously led to bad answers. Created on user
 | `stop_daemon()` | | Stop background consolidation |
 | `feedback(activation_id, quality)` | | Rate a retrieval |
 | `set_prospective(trigger, crystal_id)` | pm_id | Set future-triggered recall |
-| `suppress(crystal_id, reason)` | antibody_id | Block a crystal from recall |
+| `suppress(crystal_id, reason)` | antibody_id | Block a memory from recall |
 | `stats()` | dict | Memory health metrics |
 | `export()` | dict | Full data dump |
 
@@ -381,7 +380,7 @@ Antibodies suppress crystals that previously led to bad answers. Created on user
 |--------|----------|-------------|
 | `GET` | `/` | 3D brain UI |
 | `GET` | `/api/stats` | Memory health metrics |
-| `GET` | `/api/graph` | Crystals, entities, relations for 3D visualization |
+| `GET` | `/api/graph` | Memories, entities, relations for 3D visualization |
 | `GET` | `/api/models` | List installed Ollama models |
 | `GET` | `/api/config` | Current server config |
 | `GET` | `/api/export` | Full data dump |
@@ -407,19 +406,19 @@ All memory data is stored in `~/.semantic_gravity_memory/memory.db` (SQLite). Ea
 ## Tests
 
 ```bash
-python -m pytest tests/ -q
+python -m unittest discover tests/ -v
 # 326 passed
 ```
 
 ## Design principles
 
-- **Memories are structured objects, not text blobs.** Crystals have 25+ fields.
+- **Memories are structured objects, not text blobs.** Records have 25+ fields.
 - **Contradiction is data, not error.** Tension is stored, not flattened.
-- **Time is a dimension, not metadata.** Decay, reinforcement, gravity, prospective triggers.
-- **Retrieval is gravitational, not linear.** Graph-first, not vector-first.
-- **The memory breathes.** Consolidation runs even when idle.
+- **Time is a dimension, not metadata.** Decay, reinforcement, prospective triggers.
+- **Retrieval is multi-phase, not brute-force.** Graph-first, then embeddings on candidates.
+- **The memory tidies itself.** Consolidation runs in the background.
 - **Forgetting is a feature.** Carrying capacity forces abstraction.
-- **What you see is real.** Every glow, every pulse, every dim node reflects actual data.
+- **What you see is real.** Every glow, every dim node reflects actual data.
 - **The memory learns about itself.** Metamemory tracks its own reliability.
 - **Simple entry, deep interior.** `Memory()` — one line, one import.
 - **Your data is yours.** Local SQLite, no cloud, no telemetry.
