@@ -1,78 +1,71 @@
-"""
-Semantic Gravity Memory — Ollama Embedder
-
-Talks to a local Ollama instance over HTTP using only urllib (stdlib).
-"""
-
+"""Local text and media embeddings using Ollama's /api/embed endpoint."""
 from __future__ import annotations
 
+import base64
 import json
+import math
 import urllib.error
 import urllib.request
-from typing import List, Optional
+from typing import List
 
 from semantic_gravity_memory.embeddings.base import BaseEmbedder
 
 
 class OllamaEmbedder(BaseEmbedder):
-    """Generate embeddings via a local Ollama server."""
-
-    def __init__(
-        self,
-        model: str = "all-minilm",
-        base_url: str = "http://localhost:11434/api",
-        timeout: int = 120,
-    ):
+    def __init__(self, model='all-minilm', base_url='http://localhost:11434/api', timeout=120):
         self.model = model
-        self.base_url = base_url.rstrip("/")
+        self.base_url = base_url.rstrip('/')
         self.timeout = timeout
-        self._dimension: int = 0
+        self._dimension = 0
+
+    @property
+    def profile(self):
+        # Prefix changes also change the coordinate space and require reindexing.
+        return self.model + ('|gemma-search-v1' if 'embeddinggemma' in self.model else '|raw-v1')
+
+    def _request(self, inputs):
+        payload = json.dumps({'model': self.model, 'input': inputs, 'truncate': False}).encode()
+        req = urllib.request.Request(self.base_url + '/embed', data=payload,
+                                     headers={'Content-Type': 'application/json'})
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as response:
+                data = json.load(response)
+        except urllib.error.HTTPError as exc:
+            raise RuntimeError(f'Ollama embedding failed: {exc.read().decode(errors="replace")}') from exc
+        except urllib.error.URLError as exc:
+            raise RuntimeError(f'Cannot reach Ollama at {self.base_url}: {exc.reason}') from exc
+        vectors = data.get('embeddings', [])
+        expected = len(inputs) if isinstance(inputs, list) else 1
+        if len(vectors) != expected:
+            raise RuntimeError('Ollama returned an incomplete embedding batch.')
+        for vector in vectors:
+            if not vector or not all(isinstance(v, (int, float)) and math.isfinite(v) for v in vector):
+                raise RuntimeError('Ollama returned an invalid embedding.')
+            if self._dimension and len(vector) != self._dimension:
+                raise RuntimeError('Ollama changed embedding dimensions during this session.')
+            self._dimension = len(vector)
+        return vectors
 
     def embed(self, text: str) -> List[float]:
-        payload = json.dumps({"model": self.model, "input": text}).encode("utf-8")
-        req = urllib.request.Request(
-            f"{self.base_url}/embed",
-            data=payload,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-        except urllib.error.HTTPError as e:
-            body = e.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"Ollama HTTP {e.code}: {body}") from e
-        except urllib.error.URLError as e:
-            raise RuntimeError(f"Cannot reach Ollama at {self.base_url}: {e}") from e
+        return self._request(text)[0]
 
-        embeddings = data.get("embeddings", [])
-        if not embeddings:
-            return []
-        vec = embeddings[0]
-        if vec and self._dimension == 0:
-            self._dimension = len(vec)
-        return vec
+    def embed_query(self, text):
+        if 'embeddinggemma' in self.model:
+            text = 'task: search result | query: ' + text
+        return self.embed(text)
 
-    def embed_batch(self, texts: List[str]) -> List[List[float]]:
-        # Ollama /api/embed supports a list input natively
-        payload = json.dumps({"model": self.model, "input": texts}).encode("utf-8")
-        req = urllib.request.Request(
-            f"{self.base_url}/embed",
-            data=payload,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-        except Exception:
-            # Fallback to sequential if batch fails
-            return [self.embed(t) for t in texts]
+    def embed_document(self, text):
+        if 'embeddinggemma' in self.model:
+            text = 'title: none | text: ' + text
+        return self.embed(text)
 
-        embeddings = data.get("embeddings", [])
-        if embeddings and embeddings[0] and self._dimension == 0:
-            self._dimension = len(embeddings[0])
-        return embeddings
+    def embed_batch(self, texts):
+        return self._request(texts) if texts else []
 
-    def dimension(self) -> int:
+    def embed_media(self, data: bytes, kind: str):
+        if kind not in ('image', 'audio'):
+            raise ValueError('Use image frames for video embeddings.')
+        return self._request({kind: base64.b64encode(data).decode('ascii')})[0]
+
+    def dimension(self):
         return self._dimension

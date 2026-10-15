@@ -108,6 +108,7 @@ class MemoryEngine:
         model's response text.
         """
         scene = self.recall(query, self_state, now_ts)
+        self.ingest(query, actor="user", kind="chat_message")
         prompt = self._format_prompt(scene, query)
         answer_text = chat_fn(prompt)
 
@@ -250,7 +251,9 @@ class MemoryEngine:
             lines.append("\n--- Active Memories ---")
             for c in crystals:
                 tag = c.get("memory_type", "episodic")
-                lines.append(f"[{tag}] {c.get('title', '')}: {c.get('summary', '')}")
+                actors = ', '.join(c.get('actors', [])) or 'unknown'
+                lines.append(f"[Memory {c.get('id')}; {tag}; author: {actors}] "
+                             f"{c.get('title', '')}: {c.get('content') or c.get('summary', '')}")
                 unresolved = c.get("unresolved", "")
                 if unresolved:
                     lines.append(f"  Unresolved: {unresolved}")

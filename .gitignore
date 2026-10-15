@@ -16,6 +16,8 @@ env/
 *.sqlite
 *.sqlite3
 exports/
+.data/
+artifacts/
 *.json.bak
 
 # Environment & secrets

@@ -1,94 +1,410 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Second Brain</title>
-<link rel="stylesheet" href="/static/style.css">
-</head>
-<body>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>Second Brain · Your personal memory</title>
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <div class="shell">
+      <aside class="sidebar">
+        <a class="brand" href="/" aria-label="Second Brain home"
+          ><span class="brand-icon">✳</span
+          ><span
+            >second brain<span class="brand-sub"
+              >A little more of your mind.</span
+            ></span
+          ></a
+        >
+        <button class="primary add-source">
+          <span>＋</span> Add to your brain <kbd>⌘ I</kbd>
+        </button>
+        <div class="eyebrow nav-label">WORKSPACE</div>
+        <nav aria-label="Workspace">
+          <button class="nav-item active" data-view="map">
+            <span>⌘</span> Memory map
+            <span class="nav-count" id="nav-memory-count">0</span>
+          </button>
+          <button class="nav-item" data-view="library">
+            <span>▤</span> Source library
+            <span class="nav-count" id="nav-source-count">0</span>
+          </button>
+        </nav>
+        <div class="recent-heading">
+          <span class="eyebrow">RECENT SOURCES</span><span>↙</span>
+        </div>
+        <div id="recent-sources" class="recent-sources">
+          <p class="muted small">Your next idea starts here.</p>
+        </div>
+        <div class="sidebar-footer">
+          <div class="storage-card">
+            <span class="status-dot"></span>
+            <div>
+              <strong>Stored on this device</strong
+              ><span>Your files. Your memory.</span>
+            </div>
+            <span>↗</span>
+          </div>
+          <button class="subtle" id="btn-settings">
+            ⚙ <span>Models & settings</span>
+          </button>
+        </div>
+      </aside>
 
-<!-- Top bar -->
-<header id="topbar">
-  <div class="topbar-left">
-    <h1>second brain</h1>
-    <span class="tagline">crystals &middot; spreading activation &middot; temporal gravity</span>
-  </div>
-  <div class="topbar-right">
-    <label>chat <select id="chat-model"></select></label>
-    <label>embed <select id="embed-model"></select></label>
-    <button id="btn-refresh-models" title="Refresh models">&#x21bb;</button>
-    <button id="btn-consolidate">consolidate</button>
-    <button id="btn-stats">stats</button>
-  </div>
-</header>
-
-<!-- Main layout -->
-<div id="app">
-  <!-- 3D viewport -->
-  <div id="viewport">
-    <canvas id="brain-canvas"></canvas>
-    <!-- Floating info on hover -->
-    <div id="tooltip" class="hidden"></div>
-    <!-- Status overlay -->
-    <div id="status-overlay">
-      <span id="status-text">initializing...</span>
-    </div>
-    <!-- Node count -->
-    <div id="node-count"></div>
-  </div>
-
-  <!-- Right panel -->
-  <div id="panel">
-    <!-- Tabs -->
-    <div id="panel-tabs">
-      <button class="tab active" data-tab="chat">chat</button>
-      <button class="tab" data-tab="scene">scene</button>
-      <button class="tab" data-tab="details">details</button>
-    </div>
-
-    <!-- Chat tab -->
-    <div id="tab-chat" class="tab-content active">
-      <div id="chat-history"></div>
-      <div id="chat-input-area">
-        <textarea id="chat-input" placeholder="type a message..." rows="3"></textarea>
-        <div id="chat-buttons">
-          <button id="btn-send">send</button>
-          <button id="btn-ingest">ingest only</button>
+      <div class="workspace">
+        <header class="topbar">
+          <div class="breadcrumbs">
+            <span class="muted">My second brain</span><span>/</span
+            ><button
+              id="view-label"
+              aria-label="Switch between memory map and source library"
+            >
+              Memory map
+            </button>
+          </div>
+          <form id="search-form" class="search-box">
+            <span>⌕</span
+            ><input
+              id="global-search"
+              type="search"
+              aria-label="Search your memories"
+              placeholder="Find a thought, file, or moment…"
+            /><kbd>↵</kbd>
+          </form>
+          <button
+            class="icon-button mobile-add add-source"
+            aria-label="Add a source"
+          >
+            ＋
+          </button>
+          <button
+            class="icon-button"
+            id="btn-settings-top"
+            aria-label="Open settings"
+          >
+            ⚙
+          </button>
+        </header>
+        <div class="workspace-body">
+          <main class="main-content">
+            <section
+              id="view-map"
+              class="main-view active"
+              aria-label="Memory map"
+            >
+              <div id="viewport">
+                <canvas
+                  id="brain-canvas"
+                  aria-label="Interactive 3D graph of your actual memories and sources"
+                ></canvas>
+                <div class="map-heading">
+                  <div class="eyebrow">
+                    <span class="status-dot"></span> YOUR LIVING MEMORY
+                  </div>
+                  <h1>Your ideas,<br /><span>connected.</span></h1>
+                  <p>
+                    Every node is something you saved.<br />Every connection has
+                    a reason.
+                  </p>
+                </div>
+                <div id="map-counts" class="map-counts">
+                  <div>
+                    <strong id="count-memories">0</strong><span>memories</span>
+                  </div>
+                  <div>
+                    <strong id="count-sources">0</strong><span>sources</span>
+                  </div>
+                  <div>
+                    <strong id="count-links">0</strong><span>connections</span>
+                  </div>
+                </div>
+                <div id="map-empty" class="map-empty">
+                  <span class="empty-orbit">✳</span>
+                  <h2>A universe starts with one thought.</h2>
+                  <p>
+                    Drop in a note, a photo, or a moment worth keeping.<br />Your
+                    real connections will take shape here.
+                  </p>
+                  <button class="primary add-source">
+                    Add your first source <span>↗</span>
+                  </button>
+                </div>
+                <div id="graph-fallback" class="graph-fallback hidden">
+                  The 3D map is unavailable in this browser. Your library and
+                  chat still work.
+                </div>
+                <div id="tooltip" class="hidden"></div>
+                <div id="node-inspector" class="node-inspector hidden"></div>
+                <div class="map-footer">
+                  <div class="legend">
+                    <span><i class="dot violet"></i>Memory</span
+                    ><span><i class="dot mint"></i>Concept</span
+                    ><span><i class="dot amber"></i>Source</span>
+                  </div>
+                  <div class="graph-controls">
+                    <button
+                      id="btn-similarity"
+                      aria-pressed="false"
+                      title="Show embedding similarity suggestions (not verified relationships)"
+                    >
+                      ≈ <span>Similar</span></button
+                    ><button id="btn-fit" title="Fit all nodes">
+                      ⊙ <span>Fit</span></button
+                    ><button
+                      id="btn-rotate"
+                      aria-pressed="true"
+                      title="Toggle gentle rotation"
+                    >
+                      ↻ <span>Orbit</span></button
+                    ><button id="btn-clear-focus" title="Show all connections">
+                      ✧ <span>All</span>
+                    </button>
+                  </div>
+                </div>
+                <div id="status-overlay">
+                  <span id="status-text">Connecting to your memory…</span
+                  ><span id="node-count"></span>
+                </div>
+              </div>
+            </section>
+            <section
+              id="view-library"
+              class="main-view"
+              aria-label="Source library"
+            >
+              <div class="section-header">
+                <div class="eyebrow">THE THINGS YOU KEEP</div>
+                <h1>Source library<span class="accent">.</span></h1>
+                <p>Originals preserved. Ready when you need them.</p>
+              </div>
+              <div class="library-toolbar">
+                <div
+                  class="filter-pills"
+                  role="group"
+                  aria-label="Filter sources"
+                >
+                  <button class="active" data-filter="all">All</button
+                  ><button data-filter="text">Documents</button
+                  ><button data-filter="image">Images</button
+                  ><button data-filter="video">Video</button
+                  ><button data-filter="audio">Audio</button>
+                </div>
+                <button class="secondary add-source">＋ Add source</button>
+              </div>
+              <div id="source-grid" class="source-grid"></div>
+            </section>
+          </main>
+          <aside id="chat-panel" class="chat-panel">
+            <div class="chat-heading">
+              <div>
+                <span class="chat-symbol">✳</span
+                ><strong>Talk to your brain</strong>
+              </div>
+              <span class="badge">WITH MEMORY</span>
+            </div>
+            <div class="model-line">
+              <span class="status-dot"></span
+              ><span id="active-chat-model">Connecting to Ollama</span
+              ><button id="btn-model-shortcut" aria-label="Change chat model">
+                ⌄
+              </button>
+            </div>
+            <div id="chat-history" aria-live="polite">
+              <div id="chat-empty" class="chat-empty">
+                <span class="eyebrow">PICK UP A THREAD</span>
+                <h2>What’s on<br />your mind?</h2>
+                <p>
+                  Explore your saved material, connect ideas, or leave a thought
+                  for later.
+                </p>
+                <button
+                  class="suggestion"
+                  data-prompt="What have I been thinking about lately?"
+                >
+                  What have I been thinking about? <span>↗</span></button
+                ><button
+                  class="suggestion"
+                  data-prompt="Find connections between the sources I have saved."
+                >
+                  Connect the dots in my sources <span>↗</span>
+                </button>
+              </div>
+            </div>
+            <form id="chat-form" class="composer-wrap">
+              <div class="composer">
+                <textarea
+                  id="chat-input"
+                  aria-label="Message your second brain"
+                  placeholder="Ask, explore, remember…"
+                  rows="3"
+                ></textarea>
+                <div class="composer-actions">
+                  <button
+                    type="button"
+                    class="icon-button add-source"
+                    aria-label="Attach a source"
+                  >
+                    ＋</button
+                  ><button type="button" class="save-note" id="btn-ingest">
+                    Save as a note</button
+                  ><button
+                    id="btn-send"
+                    type="submit"
+                    aria-label="Send message"
+                  >
+                    ↑
+                  </button>
+                </div>
+              </div>
+              <div class="composer-hint">
+                <span id="chat-status">Grounded in what you’ve saved.</span
+                ><span>↵ send</span>
+              </div>
+            </form>
+          </aside>
         </div>
       </div>
     </div>
-
-    <!-- Scene tab -->
-    <div id="tab-scene" class="tab-content">
-      <pre id="scene-json"></pre>
-    </div>
-
-    <!-- Details tab -->
-    <div id="tab-details" class="tab-content">
-      <pre id="detail-json">click a node to see details</pre>
-    </div>
-  </div>
-</div>
-
-<!-- Stats modal -->
-<div id="stats-modal" class="modal hidden">
-  <div class="modal-content">
-    <button class="modal-close">&times;</button>
-    <h2>memory stats</h2>
-    <pre id="stats-json"></pre>
-  </div>
-</div>
-
-<!-- Three.js from CDN -->
-<script type="importmap">
-{
-  "imports": {
-    "three": "https://cdn.jsdelivr.net/npm/three@0.161.0/build/three.module.js",
-    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.161.0/examples/jsm/"
-  }
-}
-</script>
-<script type="module" src="/static/brain.js"></script>
-</body>
+    <div id="toast" role="status" class="toast hidden"></div>
+    <dialog id="import-dialog">
+      <div class="dialog-header">
+        <div>
+          <div class="eyebrow">MAKE ROOM FOR AN IDEA</div>
+          <h2>Add to your brain</h2>
+        </div>
+        <button class="icon-button close-dialog" aria-label="Close import">
+          ×
+        </button>
+      </div>
+      <p class="dialog-intro">
+        Bring your material together. Everything is saved locally.
+      </p>
+      <label id="drop-zone" class="drop-zone" tabindex="0"
+        ><input
+          id="file-input"
+          type="file"
+          multiple
+          accept=".txt,.md,.markdown,.csv,.json,.py,.js,.ts,.tsx,.jsx,.css,.html,.log,.yaml,.yml,.srt,.vtt,.pdf,.docx,.png,.jpg,.jpeg,.webp,.mp4,.mov,.webm,.mkv,.wav,.mp3,.m4a,.ogg,.flac,.aac"
+        /><span class="drop-icon">↥</span
+        ><strong>Drop files here, or browse</strong
+        ><span>Documents · images · video · audio</span
+        ><small
+          >Up to 64 MB per file · audio/video clips up to 5 minutes</small
+        ></label
+      >
+      <div class="or-divider">OR LEAVE A THOUGHT</div>
+      <input
+        id="note-title"
+        class="field"
+        aria-label="Note title"
+        placeholder="A title for your thought (optional)"
+      /><textarea
+        id="note-text"
+        class="field"
+        aria-label="Note text"
+        placeholder="Something you want to remember…"
+        rows="4"
+      ></textarea
+      ><button id="btn-save-import-note" class="primary">
+        Save note <span>↗</span>
+      </button>
+      <div id="import-progress" aria-live="polite"></div>
+      <p class="fine-print">
+        Video uses sampled frames. Audio is searchable and playable, without a
+        transcript. Scanned PDFs need OCR.
+      </p>
+    </dialog>
+    <dialog id="source-dialog" class="wide-dialog">
+      <div class="dialog-header">
+        <div>
+          <div id="source-kind" class="eyebrow"></div>
+          <h2 id="source-title"></h2>
+        </div>
+        <button class="icon-button close-dialog" aria-label="Close source">
+          ×
+        </button>
+      </div>
+      <div id="source-preview"></div>
+      <div id="source-meta" class="fine-print"></div>
+      <div class="source-dialog-actions">
+        <button id="btn-ask-source" class="primary">
+          Ask about this source ↗</button
+        ><a id="download-source" class="secondary" download
+          >Download original ↓</a
+        >
+      </div>
+      <div id="source-passages"></div>
+    </dialog>
+    <dialog id="search-dialog" class="wide-dialog">
+      <div class="dialog-header">
+        <div>
+          <div class="eyebrow">FOLLOW A THREAD</div>
+          <h2 id="search-title">Search results</h2>
+        </div>
+        <button class="icon-button close-dialog" aria-label="Close search">
+          ×
+        </button>
+      </div>
+      <div id="search-results"></div>
+    </dialog>
+    <dialog id="settings-dialog">
+      <div class="dialog-header">
+        <div>
+          <div class="eyebrow">YOUR LOCAL WORKSPACE</div>
+          <h2>Models & settings</h2>
+        </div>
+        <button class="icon-button close-dialog" aria-label="Close settings">
+          ×
+        </button>
+      </div>
+      <label class="setting-label"
+        >Chat model<select id="chat-model" class="field"></select
+      ></label>
+      <p class="fine-print">
+        Choose a vision-capable chat model to discuss image and video matches.
+        Cloud-tagged models are excluded here.
+      </p>
+      <label class="setting-label"
+        >Memory model<select id="embed-model" class="field"></select
+      ></label>
+      <p class="fine-print">
+        Changing this model rebuilds the saved embeddings. Originals stay
+        intact. EmbeddingGemma 2 supports text, images, and audio.
+      </p>
+      <button id="btn-save-settings" class="primary">Apply models</button>
+      <p id="settings-status" class="fine-print" aria-live="polite"></p>
+      <div class="settings-divider"></div>
+      <div id="stats-summary"></div>
+      <div class="settings-actions">
+        <button class="secondary" id="btn-consolidate">
+          Consolidate memories</button
+        ><a
+          class="secondary"
+          href="/api/export"
+          download="second-brain-export.json"
+          >Export index ↓</a
+        >
+      </div>
+      <p class="fine-print">
+        The index export includes text and metadata. Back up the SQLite database
+        and its adjacent assets folder to preserve original files.
+      </p>
+    </dialog>
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://cdn.jsdelivr.net/npm/three@0.161.0/build/three.module.js",
+          "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.161.0/examples/jsm/"
+        }
+      }
+    </script>
+    <script src="/static/workspace.js" defer></script>
+    <script type="module">
+      import("/static/brain.js").catch(() => {
+        document.getElementById("graph-fallback").classList.remove("hidden");
+      });
+    </script>
+  </body>
 </html>

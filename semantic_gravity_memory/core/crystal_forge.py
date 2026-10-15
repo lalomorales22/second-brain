@@ -148,9 +148,8 @@ class CrystalForge:
         unresolved = self._infer_unresolved(text)
         memory_type = self._classify_memory_type(text)
 
-        crystal_embedding = self._embed(
-            f"theme: {title}\nsummary: {summary}\nfuture: {future_impl}"
-        )
+        # Keep the full passage searchable, not just its first 220 characters.
+        crystal_embedding = text_embedding
 
         crystal = Crystal(
             title=title,
@@ -207,7 +206,7 @@ class CrystalForge:
         if not self.embedder:
             return None
         try:
-            return self.embedder.embed(text)
+            return self.embedder.embed_document(text)
         except Exception:
             return None
 

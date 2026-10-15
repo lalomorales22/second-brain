@@ -360,6 +360,19 @@ class RetrievalEngine:
             if c.id is not None and c.id not in candidates:
                 candidates[c.id] = c
 
+        # Graph cues miss paraphrases and older, low-salience memories. At the
+        # personal-library scale, a small semantic candidate pass is affordable.
+        if q_embedding:
+            semantic = sorted(
+                (c for c in self.storage.all_crystals()
+                 if not c.valid_to_ts and c.embedding
+                 and len(c.embedding) == len(q_embedding)),
+                key=lambda c: cosine_similarity(q_embedding, c.embedding),
+                reverse=True,
+            )[:20]
+            for c in semantic:
+                candidates[c.id] = c
+
         # ============================================================
         # PHASE 4: SELECTIVE SCORING (embeddings only on candidates)
         # Instead of scoring ALL crystals, we score only the narrowed
@@ -513,6 +526,8 @@ class RetrievalEngine:
             c = self.storage.get_crystal(cid)
             if not c:
                 continue
+            events = [self.storage.get_event(eid) for eid in c.source_event_ids]
+            events = [e for e in events if e]
             entries.append({
                 "id": c.id,
                 "title": c.title,
@@ -525,6 +540,8 @@ class RetrievalEngine:
                 "future_implications": c.future_implications,
                 "unresolved": c.unresolved,
                 "version": c.version,
+                "content": "\n".join(e.content for e in events)[:6000],
+                "actors": list(dict.fromkeys(e.actor for e in events)),
             })
         return entries
 
@@ -577,6 +594,6 @@ class RetrievalEngine:
         if not self.embedder:
             return None
         try:
-            return self.embedder.embed(text)
+            return self.embedder.embed_query(text)
         except Exception:
             return None

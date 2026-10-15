@@ -1,117 +1,86 @@
-"""
-Semantic Gravity Memory — Web API Server
-
-Lightweight HTTP server (stdlib only) that exposes the Memory API as JSON
-endpoints and serves the Three.js 3D brain UI.
-
-Features:
-  - Streaming SSE responses for chat (tokens appear as they arrive)
-  - Thinking/reasoning display (detects <think> tags from reasoning models)
-  - Memory recall → grounded prompt → streamed response → auto-ingest
-
-Usage::
-
-    python -m semantic_gravity_memory.api.server          # default port 8487
-    python -m semantic_gravity_memory.api.server --port 9000
-
-"""
-
+"""Local Second Brain workspace: sources, grounded streaming chat, and a live graph."""
 from __future__ import annotations
 
 import json
 import mimetypes
 import os
-import sys
+from pathlib import Path
+import re
 import threading
-import traceback
 import urllib.error
 import urllib.request
-from http.server import HTTPServer, BaseHTTPRequestHandler
-from typing import Any, Dict, Iterator, Optional
-from urllib.parse import parse_qs, urlparse
+import uuid
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from semantic_gravity_memory import Memory
-from semantic_gravity_memory.utils import now_iso
+from semantic_gravity_memory.models import Event
+from semantic_gravity_memory.sources import SourceLibrary, capabilities, MAX_BYTES
+from semantic_gravity_memory.embeddings.indexing import install_embedder
+from semantic_gravity_memory.api.conversation import AnswerFilter, chat_stream, source_context, attached_images
 
-UI_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "ui"))
+UI_DIR = str(Path(__file__).resolve().parent.parent / 'ui')
 DEFAULT_PORT = 8487
-DEFAULT_OLLAMA_URL = "http://localhost:11434/api"
-
-# Shared mutable state — set once at startup, read from handler threads.
-_state: Dict[str, Any] = {
-    "memory": None,
-    "ollama_url": DEFAULT_OLLAMA_URL,
-    "chat_model": "gpt-oss:20b",
-    "embed_model": "all-minilm",
-    "last_scene": {},
-}
+DEFAULT_OLLAMA_URL = 'http://localhost:11434/api'
+_state = {'memory': None, 'library': None, 'ollama_url': DEFAULT_OLLAMA_URL,
+          'chat_model': '', 'embed_model': '', 'last_scene': {}, 'lock': threading.RLock(),
+          'jobs': {}, 'active_job': None, 'model_info': {}, 'warning': ''}
 
 
-# =========================================================================
-# Ollama helpers (stdlib only)
-# =========================================================================
-
-def ollama_chat(base_url: str, model: str, prompt: str) -> str:
-    """Non-streaming chat — used as fallback."""
-    payload = json.dumps({
-        "model": model,
-        "messages": [{"role": "user", "content": prompt}],
-        "stream": False,
-    }).encode("utf-8")
-    req = urllib.request.Request(
-        f"{base_url.rstrip('/')}/chat",
-        data=payload,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    with urllib.request.urlopen(req, timeout=600) as resp:
-        data = json.loads(resp.read().decode("utf-8"))
-    return data.get("message", {}).get("content", "")
+def ollama_models(base_url):
+    with urllib.request.urlopen(base_url.rstrip('/') + '/tags', timeout=10) as response:
+        return sorted(m['name'] for m in json.load(response).get('models', []))
 
 
-def ollama_chat_stream(base_url: str, model: str, prompt: str) -> Iterator[Dict]:
-    """Streaming chat — yields chunks as they arrive from Ollama."""
-    payload = json.dumps({
-        "model": model,
-        "messages": [{"role": "user", "content": prompt}],
-        "stream": True,
-    }).encode("utf-8")
-    req = urllib.request.Request(
-        f"{base_url.rstrip('/')}/chat",
-        data=payload,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    resp = urllib.request.urlopen(req, timeout=600)
+def model_info(model):
+    if model not in _state['model_info']:
+        request = urllib.request.Request(_state['ollama_url'] + '/show',
+            data=json.dumps({'model': model}).encode(), headers={'Content-Type': 'application/json'})
+        with urllib.request.urlopen(request, timeout=10) as response:
+            info = json.load(response)
+        _state['model_info'][model] = info
+    return _state['model_info'][model]
+
+
+def _detect_models(url):
     try:
-        for raw_line in resp:
-            line = raw_line.strip()
-            if not line:
-                continue
-            try:
-                chunk = json.loads(line.decode("utf-8"))
-                yield chunk
-                if chunk.get("done"):
-                    break
-            except json.JSONDecodeError:
-                continue
-    finally:
-        resp.close()
+        names = ollama_models(url)
+    except Exception:
+        return None, None
+    embeddings = [m for m in names if any(k in m.lower() for k in ('embed', 'minilm'))]
+    chat = [m for m in names if m not in embeddings and not any(k in m.lower() for k in ('cloud', 'flux', 'z-image', 'klein'))]
+    def pick(names, preferences):
+        return next((m for pref in preferences for m in names if m.startswith(pref)), names[0] if names else None)
+    return pick(embeddings, ['embeddinggemma-2', 'embeddinggemma', 'nomic']), pick(chat, ['qwen3.5:9b', 'qwen3.5:2b', 'gemma4:e4b', 'gpt-oss:20b'])
 
 
-def ollama_models(base_url: str):
-    req = urllib.request.Request(f"{base_url.rstrip('/')}/tags", method="GET")
-    with urllib.request.urlopen(req, timeout=10) as resp:
-        data = json.loads(resp.read().decode("utf-8"))
-    return sorted(
-        [m.get("name", "") for m in data.get("models", []) if m.get("name")],
-        key=str.lower,
-    )
+def start_job(label, action):
+    # Admission is atomic, but the long-running work does not block job polling.
+    with _state['job_lock']:
+        if _state['active_job']:
+            raise ValueError('Another import or index rebuild is in progress. Wait for it to finish.')
+        job_id = uuid.uuid4().hex
+        job = {'id': job_id, 'status': 'running', 'message': label}
+        _state['jobs'][job_id] = job
+        _state['active_job'] = job_id
+    def work():
+        try:
+            with _state['lock']:
+                result = action(lambda message: job.update(message=message))
+            job.update(status='done', result=result, message='Ready')
+        except Exception as exc:
+            job.update(status='error', error=str(exc), message='Could not finish')
+        finally:
+            with _state['job_lock']:
+                _state['active_job'] = None
+                if len(_state['jobs']) > 100:
+                    for key in list(_state['jobs'])[:-50]:
+                        if key != job_id:
+                            _state['jobs'].pop(key, None)
+    threading.Thread(target=work, daemon=True).start()
+    return job
 
-
-# =========================================================================
-# JSON helpers
-# =========================================================================
+_state['job_lock'] = threading.Lock()
 
 def _crystal_to_dict(c, storage=None) -> Dict[str, Any]:
     d = {
@@ -175,491 +144,348 @@ def _contradiction_to_dict(c) -> Dict[str, Any]:
     }
 
 
-# =========================================================================
-# HTTP Handler
-# =========================================================================
-
 class BrainHandler(BaseHTTPRequestHandler):
-
     def log_message(self, format, *args):
-        # Only log errors, not every request
-        if args and (str(args[0]).startswith("4") or str(args[0]).startswith("5")):
-            # Suppress favicon 404 noise
-            if "/favicon" not in (self.path or ""):
-                super().log_message(format, *args)
+        if args and str(args[0]).startswith(('4', '5')):
+            super().log_message(format, *args)
 
-    # ---------- helpers ----------
+    @property
+    def memory(self):
+        return _state['memory']
 
-    def _send_json(self, data: Any, status: int = 200):
-        body = json.dumps(data, ensure_ascii=False, default=str).encode("utf-8")
+    @property
+    def library(self):
+        return _state['library']
+
+    def _json(self, data, status=200):
+        body = json.dumps(data, ensure_ascii=False, default=str).encode()
         self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header('Content-Type', 'application/json; charset=utf-8')
+        self.send_header('Content-Length', str(len(body)))
+        self.send_header('X-Content-Type-Options', 'nosniff')
         self.end_headers()
         self.wfile.write(body)
 
-    def _send_error_json(self, status: int, message: str):
-        self._send_json({"error": message}, status)
+    def _body(self, limit=MAX_BYTES):
+        length = int(self.headers.get('Content-Length', '0'))
+        if length < 0 or length > limit:
+            raise ValueError('Request exceeds the size limit.')
+        return self.rfile.read(length)
 
-    def _read_json_body(self) -> Dict[str, Any]:
-        length = int(self.headers.get("Content-Length", 0))
-        if length == 0:
-            return {}
-        raw = self.rfile.read(length)
-        return json.loads(raw.decode("utf-8"))
+    def _read_json(self):
+        value = json.loads(self._body(2 * 1024 * 1024) or b'{}')
+        if not isinstance(value, dict):
+            raise ValueError('Expected a JSON object.')
+        return value
 
-    def _serve_file(self, filepath: str):
-        if not os.path.isfile(filepath):
-            self.send_error(404)
-            return
-        mime, _ = mimetypes.guess_type(filepath)
-        mime = mime or "application/octet-stream"
-        with open(filepath, "rb") as f:
-            data = f.read()
-        self.send_response(200)
-        self.send_header("Content-Type", mime)
-        self.send_header("Content-Length", str(len(data)))
-        self.send_header("Cache-Control", "no-cache")
+    def _file(self, path, download=False, filename=None):
+        path = Path(path)
+        if not path.is_file():
+            return self._json({'error': 'File not found.'}, 404)
+        size = path.stat().st_size
+        start, end, status = 0, size - 1, 200
+        range_header = self.headers.get('Range')
+        if range_header:
+            match = re.fullmatch(r'bytes=(\d+)-(\d*)', range_header)
+            if not match:
+                return self._json({'error': 'Unsupported byte range.'}, 416)
+            start = int(match[1])
+            end = min(int(match[2]) if match[2] else end, end)
+            if start > end:
+                return self._json({'error': 'Range out of bounds.'}, 416)
+            status = 206
+        self.send_response(status)
+        self.send_header('Content-Type', mimetypes.guess_type(str(path))[0] or 'application/octet-stream')
+        self.send_header('Content-Length', str(max(0, end - start + 1)))
+        self.send_header('Accept-Ranges', 'bytes')
+        self.send_header('X-Content-Type-Options', 'nosniff')
+        if filename or download:
+            disposition = 'attachment' if download else 'inline'
+            suffix = "; filename*=UTF-8''" + quote(filename) if filename else ''
+            self.send_header('Content-Disposition', disposition + suffix)
+        self.send_header('Cache-Control', 'no-cache')
+        if status == 206:
+            self.send_header('Content-Range', f'bytes {start}-{end}/{size}')
         self.end_headers()
-        self.wfile.write(data)
-
-    def _send_sse(self, event_type: str, data: dict):
-        """Send one Server-Sent Event."""
-        payload = json.dumps({"type": event_type, **data}, ensure_ascii=False, default=str)
-        self.wfile.write(f"data: {payload}\n\n".encode("utf-8"))
-        self.wfile.flush()
-
-    @property
-    def memory(self) -> Optional[Memory]:
-        return _state["memory"]
-
-    # ---------- GET routes ----------
+        with path.open('rb') as file:
+            file.seek(start)
+            remaining = end - start + 1
+            while remaining > 0:
+                block = file.read(min(65536, remaining))
+                if not block:
+                    break
+                self.wfile.write(block)
+                remaining -= len(block)
 
     def do_GET(self):
-        parsed = urlparse(self.path)
-        path = parsed.path.rstrip("/") or "/"
+        try:
+            self._get()
+        except (ValueError, json.JSONDecodeError) as exc:
+            self._json({'error': str(exc)}, 400)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        except Exception as exc:
+            self._json({'error': str(exc)}, 500)
 
-        if path == "/":
-            self._serve_file(os.path.join(UI_DIR, "index.html"))
-        elif path == "/favicon.ico":
-            # Empty favicon — suppress 404
+    def _get(self):
+        parsed = urlparse(self.path)
+        path = parsed.path.rstrip('/') or '/'
+        if path == '/':
+            return self._file(Path(UI_DIR) / 'index.html')
+        if path.startswith('/static/'):
+            file = (Path(UI_DIR) / unquote(path[8:])).resolve()
+            if Path(UI_DIR).resolve() not in file.parents:
+                return self._json({'error': 'File not found.'}, 404)
+            return self._file(file)
+        if path.startswith('/api/jobs/'):
+            job = _state['jobs'].get(path.rsplit('/', 1)[-1])
+            return self._json(dict(job) if job else {'error': 'Job not found.'}, 200 if job else 404)
+        if path == '/api/models':
+            names = ollama_models(_state['ollama_url'])
+            return self._json({'models': names})
+        if path == '/api/config':
+            return self._json({k: _state[k] for k in ('chat_model', 'embed_model', 'ollama_url', 'warning')} | {'capabilities': capabilities(), 'active_job': _state['active_job']})
+        if path == '/favicon.ico':
             self.send_response(204)
             self.end_headers()
-        elif path.startswith("/static/"):
-            relpath = path[len("/static/"):]
-            self._serve_file(os.path.join(UI_DIR, relpath))
-        elif path == "/api/stats":
-            self._api_stats()
-        elif path == "/api/graph":
-            self._api_graph(parsed)
-        elif path == "/api/models":
-            self._api_models()
-        elif path == "/api/export":
-            self._api_export()
-        elif path == "/api/config":
-            self._api_get_config()
-        else:
-            self.send_error(404)
-
-    # ---------- POST routes ----------
+            return
+        with _state['lock']:
+            if path == '/api/stats':
+                stats = self.memory.stats()
+                stats.update(sources=len(self.library.list()), passages=self.library.conn.execute('SELECT count(*) FROM source_chunks').fetchone()[0])
+                return self._json(stats)
+            if path == '/api/sources':
+                return self._json({'sources': self.library.list()})
+            match = re.fullmatch(r'/api/sources/([a-f0-9]{32})(/file)?', path)
+            if match:
+                if match[2]:
+                    file = self.library.asset(source_id=match[1])
+                    inline = file.suffix.lower() in {'.png', '.jpg', '.jpeg', '.webp', '.mp4', '.webm', '.mov', '.wav', '.mp3', '.m4a', '.ogg', '.flac'}
+                    return self._file(file, download=not inline, filename=self.library.get(match[1])['name'])
+                return self._json(self.library.get(match[1]))
+            match = re.fullmatch(r'/api/chunks/(\d+)/media', path)
+            if match:
+                return self._file(self.library.asset(chunk_id=int(match[1])))
+            if path == '/api/history':
+                events = [e for e in reversed(self.memory._storage.recent_events(100))
+                          if e.kind in ('chat_message', 'chat_response')]
+                return self._json({'messages': [{'id': e.id, 'role': e.actor, 'content': e.content,
+                    'sources': e.context.get('sources', [])} for e in events[-40:]]})
+            if path == '/api/graph':
+                return self._graph()
+            if path == '/api/export':
+                return self._json(self.memory.export() | {'sources': [self.library.get(s['id']) for s in self.library.list()]})
+        return self._json({'error': 'Not found.'}, 404)
 
     def do_POST(self):
-        path = urlparse(self.path).path.rstrip("/")
-
-        if path == "/api/ingest":
-            self._api_ingest()
-        elif path == "/api/recall":
-            self._api_recall()
-        elif path == "/api/answer":
-            self._api_answer_stream()
-        elif path == "/api/consolidate":
-            self._api_consolidate()
-        elif path == "/api/feedback":
-            self._api_feedback()
-        elif path == "/api/config":
-            self._api_set_config()
-        else:
-            self.send_error(404)
-
-    def do_OPTIONS(self):
-        self.send_response(204)
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
-        self.end_headers()
-
-    # ---------- API: streaming answer ----------
-
-    def _api_answer_stream(self):
-        """Streaming answer: recall → format prompt → stream chat → ingest.
-
-        Uses Server-Sent Events so the frontend sees tokens as they arrive.
-        Detects <think>...</think> tags for reasoning models.
-        """
-        if not self.memory:
-            return self._send_error_json(503, "memory not initialized")
-        body = self._read_json_body()
-        query = body.get("query", "").strip()
-        if not query:
-            return self._send_error_json(400, "query is required")
-
-        model = body.get("model") or _state["chat_model"]
-        url = body.get("ollama_url") or _state["ollama_url"]
-        self_state = body.get("self_state")
-
-        # 1. Recall (synchronous — fast with gravitational retrieval)
+        # A private local workspace should not accept cross-site writes.
+        origin = self.headers.get('Origin')
+        if origin and urlparse(origin).netloc != self.headers.get('Host'):
+            return self._json({'error': 'Cross-origin writes are not allowed.'}, 403)
         try:
-            scene = self.memory.recall(query, self_state=self_state)
-            _state["last_scene"] = scene
-        except Exception as e:
-            return self._send_error_json(500, f"recall failed: {e}")
+            self._post()
+        except (ValueError, json.JSONDecodeError) as exc:
+            self._json({'error': str(exc)}, 400)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        except Exception as exc:
+            self._json({'error': str(exc)}, 500)
 
-        # 2. Format the grounded prompt
-        prompt = self.memory._engine._format_prompt(scene, query)
+    def _post(self):
+        parsed = urlparse(self.path)
+        path = parsed.path.rstrip('/')
+        if path == '/api/sources':
+            name = parse_qs(parsed.query).get('name', [''])[0]
+            if not name:
+                raise ValueError('A filename is required.')
+            data = self._body()
+            def ingest(progress):
+                source = self.library.ingest(name, data, progress)
+                if not source.get('crystal_id'):
+                    description = source['description'] if source['kind'] == 'text' else ''
+                    _, cid = self.memory.ingest(f'Source: {source["name"]}\n{description}',
+                        kind='source_import', context={'source_id': source['id']})
+                    with self.memory._storage.conn:
+                        self.memory._storage.conn.execute('UPDATE sources SET crystal_id=? WHERE id=?', (cid, source['id']))
+                    source['crystal_id'] = cid
+                return source
+            return self._json(start_job('Importing ' + name, ingest), 202)
+        body = self._read_json()
+        if path == '/api/config':
+            if 'ollama_url' in body and body['ollama_url'] != _state['ollama_url']:
+                raise ValueError('Change the Ollama address with --ollama-url when starting the app.')
+            if 'chat_model' in body:
+                candidate = body['chat_model']
+                info = model_info(candidate)
+                if 'completion' not in info.get('capabilities', []):
+                    raise ValueError('Choose a chat model with completion capability.')
+                _state['chat_model'] = candidate
+                with _state['lock']:
+                    self.memory._storage.set_meta('chat_model', candidate)
+            if 'embed_model' in body and body['embed_model'] != _state['embed_model']:
+                model = body['embed_model']
+                def rebuild(progress):
+                    progress('Rebuilding embeddings. Your original sources are preserved.')
+                    count = install_embedder(self.memory, model, _state['ollama_url'], self.library)
+                    _state.update(embed_model=model, warning='')
+                    return {'updated': count, 'embed_model': model}
+                return self._json(start_job('Rebuilding index', rebuild), 202)
+            return self._json({'ok': True})
+        if path == '/api/answer':
+            return self._answer(body)
+        with _state['lock']:
+            if path == '/api/ingest':
+                text = str(body.get('text', '')).strip()
+                if not text:
+                    raise ValueError('Text is required.')
+                if len(text) > 12000:
+                    raise ValueError('Import a text file for notes longer than 12,000 characters.')
+                eid, cid = self.memory.ingest(text, kind='note')
+                return self._json({'event_id': eid, 'crystal_id': cid})
+            if path in ('/api/search', '/api/recall'):
+                query = str(body.get('query', '')).strip()
+                if not query:
+                    raise ValueError('A query is required.')
+                scene = self.memory.recall(query)
+                scene['sources'] = self.library.search(query)
+                _state['last_scene'] = scene
+                return self._json(scene)
+            if path == '/api/consolidate':
+                return self._json(self.memory.consolidate())
+            if path == '/api/feedback':
+                self.memory.feedback(int(body['activation_id']), float(body['quality']))
+                return self._json({'ok': True})
+        return self._json({'error': 'Not found.'}, 404)
 
-        # 3. Start SSE response
+    def _graph(self):
+        storage = self.memory._storage
+        crystals = storage.recent_crystals(limit=180)
+        entities = storage.top_entities(limit=100)
+        sources, source_relations = self.library.graph()
+        # Include source-linked memories even when they are outside the recent window.
+        ids = {c.id for c in crystals}
+        for source in sources[:100]:
+            if source['crystal_id'] and source['crystal_id'] not in ids:
+                crystal = storage.get_crystal(source['crystal_id'])
+                if crystal:
+                    crystals.append(crystal)
+                    ids.add(crystal.id)
+        keys = {('crystal', c.id) for c in crystals} | {('entity', e.id) for e in entities}
+        relations = [_relation_to_dict(r) for r in storage.all_relations()
+                     if (r.source_type, r.source_id) in keys and (r.target_type, r.target_id) in keys]
+        return self._json({'crystals': [_crystal_to_dict(c, storage) for c in crystals],
+            'entities': [_entity_to_dict(e) for e in entities], 'sources': sources[:100],
+            'relations': relations + source_relations, 'last_scene': _state['last_scene'],
+            'contradictions': [_contradiction_to_dict(c) for c in storage.open_contradictions()]})
+
+    def _sse(self, kind, **data):
+        self.wfile.write(('data: ' + json.dumps({'type': kind, **data}, default=str) + '\n\n').encode())
+        self.wfile.flush()
+
+    def _answer(self, body):
+        query = str(body.get('query', '')).strip()
+        if not query or len(query) > 12000:
+            raise ValueError('Enter a message of 1–12,000 characters.')
+        model = body.get('model') or _state['chat_model']
+        info = model_info(model)
+        if 'completion' not in info.get('capabilities', []):
+            raise ValueError('Select a chat model first.')
+        with _state['lock']:
+            scene = self.memory.recall(query)
+            hits = self.library.search(query)
+            scene['sources'] = hits
+            _state['last_scene'] = scene
+            history = [e for e in reversed(self.memory._storage.recent_events(30))
+                       if e.kind in ('chat_message', 'chat_response')][-8:]
+            # Save the user's words even if generation fails. Assistant text is
+            # stored as conversation history, not promoted to a factual memory.
+            self.memory.ingest(query, actor='user', kind='chat_message')
+            compact_scene = dict(scene, crystals=[dict(c, content=(c.get('content') or c['summary'])[:1200])
+                                                 for c in scene['crystals'][:4]])
+            prompt = self.memory._engine._format_prompt(compact_scene, query) + source_context(hits)
+            messages = [{'role': 'system', 'content': prompt}]
+            messages.extend({'role': e.actor, 'content': e.content[:1200]} for e in history[-4:])
+            message = {'role': 'user', 'content': query}
+            if 'vision' in info.get('capabilities', []):
+                images = attached_images(hits, self.library)
+                if images:
+                    labels = [f'[S{i}]' for i, h in enumerate(hits, 1) if h.get('media_kind') == 'image'][:3]
+                    message.update(images=images, content=query + '\nAttached images, in order: ' + ', '.join(labels))
+            messages.append(message)
         self.send_response(200)
-        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
-        self.send_header("Cache-Control", "no-cache")
-        self.send_header("Connection", "keep-alive")
-        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header('Content-Type', 'text/event-stream; charset=utf-8')
+        self.send_header('Cache-Control', 'no-cache')
+        self.send_header('Connection', 'close')
         self.end_headers()
-
-        # Send scene immediately so frontend can highlight nodes
-        self._send_sse("scene", {"scene": scene})
-
-        # 4. Stream from Ollama
-        full_response = ""
-        in_thinking = False
-
+        self.close_connection = True
+        self._sse('scene', scene=scene)
+        answer = ''
+        filter = AnswerFilter()
         try:
-            for chunk in ollama_chat_stream(url, model, prompt):
-                msg = chunk.get("message", {})
-                content = msg.get("content", "")
-                if not content:
-                    if chunk.get("done"):
-                        break
-                    continue
-
-                # Detect <think> tags for reasoning models
-                # Process character by character through the content
-                i = 0
-                while i < len(content):
-                    remaining = content[i:]
-
-                    if not in_thinking and remaining.startswith("<think>"):
-                        in_thinking = True
-                        i += len("<think>")
-                        self._send_sse("thinking_start", {})
-                        continue
-
-                    if in_thinking and remaining.startswith("</think>"):
-                        in_thinking = False
-                        i += len("</think>")
-                        self._send_sse("thinking_end", {})
-                        continue
-
-                    # Find next tag boundary
-                    if in_thinking:
-                        next_tag = remaining.find("</think>")
-                        if next_tag == -1:
-                            self._send_sse("thinking", {"content": remaining})
-                            full_response += remaining
-                            break
-                        else:
-                            self._send_sse("thinking", {"content": remaining[:next_tag]})
-                            full_response += remaining[:next_tag]
-                            i += next_tag
-                            continue
-                    else:
-                        next_tag = remaining.find("<think>")
-                        if next_tag == -1:
-                            self._send_sse("token", {"content": remaining})
-                            full_response += remaining
-                            break
-                        elif next_tag > 0:
-                            self._send_sse("token", {"content": remaining[:next_tag]})
-                            full_response += remaining[:next_tag]
-                            i += next_tag
-                            continue
-                        else:
-                            i += 0  # Will be caught by startswith above
-                            # Force advance to avoid infinite loop
-                            if remaining.startswith("<think>"):
-                                in_thinking = True
-                                i += len("<think>")
-                                self._send_sse("thinking_start", {})
-                            else:
-                                self._send_sse("token", {"content": "<"})
-                                full_response += "<"
-                                i += 1
-
-                if chunk.get("done"):
-                    break
-
-        except Exception as e:
-            self._send_sse("error", {"message": str(e)})
+            for chunk in chat_stream(_state['ollama_url'], model, messages, 'thinking' in info.get('capabilities', [])):
+                token = filter.feed(chunk.get('message', {}).get('content', ''))
+                if token:
+                    answer += token
+                    self._sse('token', content=token)
+            tail = filter.feed('', final=True)
+            if tail:
+                answer += tail
+                self._sse('token', content=tail)
+            if not answer.strip():
+                raise RuntimeError('The model returned no answer. Try a different chat model.')
+            with _state['lock']:
+                self.memory._storage.insert_event(Event(actor='assistant', kind='chat_response', content=answer,
+                    context={'query': query, 'sources': hits, 'activation_id': scene.get('activation_id')}))
+            self._sse('done', answer=answer, scene=scene)
+        except (BrokenPipeError, ConnectionResetError):
             return
-
-        # 5. Ingest the assistant response into memory
-        try:
-            clean_response = full_response
-            # Strip thinking tags from the stored memory
-            import re
-            clean_response = re.sub(r'<think>.*?</think>', '', clean_response, flags=re.DOTALL).strip()
-            if clean_response:
-                self.memory.ingest(
-                    clean_response,
-                    actor="assistant",
-                    kind="chat_response",
-                    context={"query": query, "activation_id": scene.get("activation_id")},
-                )
-        except Exception:
-            pass  # Don't fail the response if ingest fails
-
-        # 6. Send done
-        self._send_sse("done", {"answer": full_response, "scene": scene})
-
-    # ---------- API: other endpoints ----------
-
-    def _api_stats(self):
-        if not self.memory:
-            return self._send_error_json(503, "memory not initialized")
-        self._send_json(self.memory.stats())
-
-    def _api_graph(self, parsed):
-        if not self.memory:
-            return self._send_error_json(503, "memory not initialized")
-        qs = parse_qs(parsed.query)
-        crystal_limit = int(qs.get("crystal_limit", ["100"])[0])
-        entity_limit = int(qs.get("entity_limit", ["50"])[0])
-
-        crystals = self.memory._storage.recent_crystals(limit=crystal_limit)
-        entities = self.memory._storage.top_entities(limit=entity_limit)
-        relations = self.memory._storage.all_relations()
-        contradictions = self.memory._storage.open_contradictions()
-
-        crystal_ids = {c.id for c in crystals}
-        entity_ids = {e.id for e in entities}
-
-        filtered_relations = []
-        for r in relations:
-            src_ok = (r.source_type == "crystal" and r.source_id in crystal_ids) or \
-                     (r.source_type == "entity" and r.source_id in entity_ids)
-            tgt_ok = (r.target_type == "crystal" and r.target_id in crystal_ids) or \
-                     (r.target_type == "entity" and r.target_id in entity_ids)
-            if src_ok and tgt_ok:
-                filtered_relations.append(r)
-
-        self._send_json({
-            "crystals": [_crystal_to_dict(c, self.memory._storage) for c in crystals],
-            "entities": [_entity_to_dict(e) for e in entities],
-            "relations": [_relation_to_dict(r) for r in filtered_relations],
-            "contradictions": [_contradiction_to_dict(c) for c in contradictions],
-            "last_scene": _state.get("last_scene", {}),
-        })
-
-    def _api_models(self):
-        try:
-            models = ollama_models(_state["ollama_url"])
-            self._send_json({"models": models})
-        except Exception as e:
-            self._send_json({"models": [], "error": str(e)})
-
-    def _api_export(self):
-        if not self.memory:
-            return self._send_error_json(503, "memory not initialized")
-        self._send_json(self.memory.export())
-
-    def _api_get_config(self):
-        self._send_json({
-            "ollama_url": _state["ollama_url"],
-            "chat_model": _state["chat_model"],
-            "embed_model": _state["embed_model"],
-        })
-
-    def _api_ingest(self):
-        if not self.memory:
-            return self._send_error_json(503, "memory not initialized")
-        body = self._read_json_body()
-        text = body.get("text", "").strip()
-        if not text:
-            return self._send_error_json(400, "text is required")
-        actor = body.get("actor", "user")
-        kind = body.get("kind", "chat_message")
-        context = body.get("context")
-        event_id, crystal_id = self.memory.ingest(text, actor, kind, context)
-        self._send_json({"event_id": event_id, "crystal_id": crystal_id})
-
-    def _api_recall(self):
-        if not self.memory:
-            return self._send_error_json(503, "memory not initialized")
-        body = self._read_json_body()
-        query = body.get("query", "").strip()
-        if not query:
-            return self._send_error_json(400, "query is required")
-        self_state = body.get("self_state")
-        scene = self.memory.recall(query, self_state=self_state)
-        _state["last_scene"] = scene
-        self._send_json(scene)
-
-    def _api_consolidate(self):
-        if not self.memory:
-            return self._send_error_json(503, "memory not initialized")
-        log = self.memory.consolidate()
-        self._send_json(log)
-
-    def _api_feedback(self):
-        if not self.memory:
-            return self._send_error_json(503, "memory not initialized")
-        body = self._read_json_body()
-        activation_id = body.get("activation_id")
-        quality = body.get("quality")
-        if activation_id is None or quality is None:
-            return self._send_error_json(400, "activation_id and quality required")
-        self_state = body.get("self_state", "general")
-        self.memory.feedback(int(activation_id), float(quality), self_state)
-        self._send_json({"ok": True})
-
-    def _api_set_config(self):
-        body = self._read_json_body()
-        if "ollama_url" in body:
-            _state["ollama_url"] = body["ollama_url"]
-        if "chat_model" in body:
-            _state["chat_model"] = body["chat_model"]
-        if "embed_model" in body:
-            _state["embed_model"] = body["embed_model"]
-        self._send_json({"ok": True})
+        except Exception as exc:
+            self._sse('error', message=str(exc))
 
 
-# =========================================================================
-# Server entrypoint
-# =========================================================================
-
-class ThreadedHTTPServer(HTTPServer):
-    allow_reuse_address = True
-
-    def process_request(self, request, client_address):
-        t = threading.Thread(target=self._handle, args=(request, client_address))
-        t.daemon = True
-        t.start()
-
-    def _handle(self, request, client_address):
-        try:
-            self.finish_request(request, client_address)
-        except Exception:
-            self.handle_error(request, client_address)
-        finally:
-            self.shutdown_request(request)
+ThreadedHTTPServer = ThreadingHTTPServer
 
 
-def _detect_models(ollama_url: str):
-    """Auto-detect embed and chat models from what Ollama has installed.
-
-    Preferred embed models (in order): all-minilm, nomic-embed-text, any *embed*.
-    Preferred chat models (in order): llama, gemma, mistral, ministral, deepseek,
-    granite, qwen, phi — then fall back to first non-embed model.
-    """
-    try:
-        models = ollama_models(ollama_url)
-    except Exception:
-        return None, None
-
-    if not models:
-        return None, None
-
-    models_lower = [(m, m.lower()) for m in models]
-
-    # --- Embed model ---
-    embed_prefs = ["all-minilm", "minilm", "nomic-embed", "embed"]
-    embed_model = None
-    for pref in embed_prefs:
-        for name, low in models_lower:
-            if pref in low:
-                embed_model = name
-                break
-        if embed_model:
-            break
-
-    # --- Chat model ---
-    # Exclude known non-chat models (embed, flux, ocr-only)
-    skip_patterns = ["embed", "flux", "klein"]
-    chat_candidates = [
-        (name, low) for name, low in models_lower
-        if not any(s in low for s in skip_patterns)
-    ]
-
-    chat_prefs = ["llama", "gemma", "mistral", "ministral", "deepseek",
-                  "granite", "qwen", "phi", "lfm"]
-    chat_model = None
-    for pref in chat_prefs:
-        for name, low in chat_candidates:
-            if pref in low:
-                chat_model = name
-                break
-        if chat_model:
-            break
-
-    # Fallback: first chat candidate
-    if not chat_model and chat_candidates:
-        chat_model = chat_candidates[0][0]
-
-    return embed_model, chat_model
-
-
-def run(port: int = DEFAULT_PORT, ollama_url: str = DEFAULT_OLLAMA_URL,
-        embed_model: Optional[str] = None, chat_model: Optional[str] = None):
-    _state["ollama_url"] = ollama_url
-
-    # Auto-detect models if not explicitly provided
+def run(port=DEFAULT_PORT, ollama_url=DEFAULT_OLLAMA_URL, embed_model=None, chat_model=None,
+        db_path=None, host='127.0.0.1'):
+    memory = Memory(db_path=db_path)
+    path = Path(memory._storage.db_path).resolve()
+    library = SourceLibrary(memory._storage, path.parent / (path.stem + '-assets'))
+    _state.update(memory=memory, library=library, ollama_url=ollama_url.rstrip('/'))
     detected_embed, detected_chat = _detect_models(ollama_url)
-
+    chat_model = chat_model or memory._storage.get_meta('chat_model') or detected_chat or ''
     if embed_model is None:
-        embed_model = detected_embed
-    if chat_model is None:
-        chat_model = detected_chat
-
-    _state["chat_model"] = chat_model or ""
-    _state["embed_model"] = embed_model or ""
-
-    if embed_model:
-        try:
-            _state["memory"] = Memory(ollama_model=embed_model, ollama_url=ollama_url)
-        except Exception:
-            print(f"[warn] could not init with '{embed_model}', falling back to no-embedding mode")
-            _state["memory"] = Memory()
-    else:
-        print("[info] no embedding model found — running without embeddings")
-        _state["memory"] = Memory()
-
-    server = ThreadedHTTPServer(("0.0.0.0", port), BrainHandler)
-    print(f"\n  second brain — 3D visualization")
-    print(f"  http://localhost:{port}")
-    print(f"  ollama: {ollama_url}")
-    print(f"  embed: {embed_model or '(none)'}")
-    print(f"  chat:  {chat_model or '(none)'}\n")
+        embed_model = (memory._storage.get_meta('embedding_model')
+                       if memory._storage.get_meta('embedding_configured') else detected_embed) or ''
+    _state['chat_model'] = chat_model
+    try:
+        install_embedder(memory, embed_model, ollama_url, library)
+        _state['embed_model'] = embed_model
+    except Exception as exc:
+        _state.update(embed_model='', warning='Embeddings unavailable: ' + str(exc))
+        print(_state['warning'], flush=True)
+    server = ThreadingHTTPServer((host, port), BrainHandler)
+    print(f'Second Brain: http://{host}:{port}\nDatabase: {path}\nEmbeddings: {_state["embed_model"]}\nChat: {chat_model}', flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        print("\nshutting down...")
-        _state["memory"].close()
-        server.shutdown()
+        pass
+    finally:
+        server.server_close()
+        memory.close()
 
 
 def main():
     import argparse
-    parser = argparse.ArgumentParser(description="Second Brain — 3D Web UI")
-    parser.add_argument("--port", type=int, default=DEFAULT_PORT)
-    parser.add_argument("--ollama-url", default=DEFAULT_OLLAMA_URL)
-    parser.add_argument("--embed-model", default=None,
-                        help="Ollama embedding model (auto-detected if not set)")
-    parser.add_argument("--chat-model", default=None,
-                        help="Ollama chat model (auto-detected if not set)")
-    args = parser.parse_args()
-    run(port=args.port, ollama_url=args.ollama_url,
-        embed_model=args.embed_model, chat_model=args.chat_model)
+    parser = argparse.ArgumentParser(description='Second Brain — your local memory workspace')
+    parser.add_argument('--port', type=int, default=DEFAULT_PORT)
+    parser.add_argument('--host', default='127.0.0.1')
+    parser.add_argument('--db', dest='db_path', help='SQLite database path; assets are stored beside it')
+    parser.add_argument('--ollama-url', default=DEFAULT_OLLAMA_URL)
+    parser.add_argument('--embed-model')
+    parser.add_argument('--chat-model')
+    run(**vars(parser.parse_args()))
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

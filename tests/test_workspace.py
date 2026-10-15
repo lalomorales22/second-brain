@@ -1,0 +1,313 @@
+"""Regression coverage for source ingestion, model swaps, and conversation safety."""
+import json
+from pathlib import Path
+import tempfile
+import unittest
+from unittest.mock import patch
+
+from semantic_gravity_memory import Memory
+from semantic_gravity_memory.api.conversation import AnswerFilter, source_context
+from semantic_gravity_memory.embeddings.indexing import install_embedder
+from semantic_gravity_memory.embeddings.ollama import OllamaEmbedder
+from semantic_gravity_memory.sources import SourceLibrary, chunk_text, MAX_BYTES
+from semantic_gravity_memory.storage.sqlite_backend import SQLiteBackend
+
+
+class FakeEmbedder:
+    model = 'test'
+    profile = 'test|v1'
+    def embed_document(self, text):
+        return [1., 0.] if 'PEAR-739' in text else [0., 1.]
+    def embed_query(self, text):
+        return [1., 0.]
+    def embed_media(self, data, kind):
+        return [0.5, 0.5]
+
+
+class SourceTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.storage = SQLiteBackend(str(Path(self.temp.name) / 'memory.db'))
+        self.library = SourceLibrary(self.storage, Path(self.temp.name) / 'assets', FakeEmbedder())
+    def tearDown(self):
+        self.storage.close()
+        self.temp.cleanup()
+
+    def test_all_text_is_preserved_including_tail(self):
+        text = 'ordinary background ' * 400 + '\nThe important code is PEAR-739.'
+        result = self.library.ingest('notes.txt', text.encode())
+        self.assertGreater(result['chunks'], 2)
+        hits = self.library.search('What is the code?')
+        self.assertIn('PEAR-739', hits[0]['text'])
+        self.assertEqual(self.library.asset(source_id=result['id']).read_text(), text)
+
+    def test_duplicate_content_does_not_make_duplicate_sources(self):
+        first = self.library.ingest('one.txt', b'This is one note.')
+        second = self.library.ingest('renamed.txt', b'This is one note.')
+        self.assertEqual(first['id'], second['id'])
+        self.assertTrue(second['duplicate'])
+        self.assertEqual(len(self.library.list()), 1)
+
+    def test_failed_embedding_leaves_no_half_import(self):
+        with patch.object(self.library.embedder, 'embed_document', side_effect=RuntimeError('offline')):
+            with self.assertRaisesRegex(RuntimeError, 'offline'):
+                self.library.ingest('broken.txt', b'Failure must not be saved.')
+        self.assertEqual(self.library.list(), [])
+        self.assertEqual(list(self.library.asset_dir.iterdir()), [])
+
+    def test_original_survives_reopening_database(self):
+        source = self.library.ingest('keep.md', b'Keep the complete original.')
+        self.storage.close()
+        self.storage = SQLiteBackend(str(Path(self.temp.name) / 'memory.db'))
+        library = SourceLibrary(self.storage, Path(self.temp.name) / 'assets', FakeEmbedder())
+        self.assertEqual(library.get(source['id'])['name'], 'keep.md')
+        self.assertEqual(library.asset(source_id=source['id']).read_bytes(), b'Keep the complete original.')
+
+    def test_unrelated_embedding_profiles_are_not_compared(self):
+        source = self.library.ingest('notes.txt', b'The secret is PEAR-739.')
+        self.storage.conn.execute("UPDATE source_chunks SET profile='different-model'")
+        self.storage.conn.commit()
+        self.assertEqual(self.library.search('unrelated query'), [])
+
+    def test_text_search_without_ollama(self):
+        self.library.embedder = None
+        self.library.ingest('notes.txt', b'Rainwater irrigation for apple trees.')
+        self.assertEqual(len(self.library.search('irrigation')), 1)
+
+    def test_media_requires_embeddings(self):
+        self.library.embedder = None
+        with self.assertRaisesRegex(ValueError, 'multimodal'):
+            self.library.ingest('image.png', b'fake png')
+        self.assertEqual(self.library.list(), [])
+
+    def test_filename_cannot_escape_asset_directory(self):
+        source = self.library.ingest('../../escape.txt', b'hello')
+        self.assertEqual(source['name'], 'escape.txt')
+        self.assertIn(self.library.asset_dir, self.library.asset(source_id=source['id']).parents)
+
+    def test_unsupported_or_empty_input_rejected(self):
+        for name, data in [('a.txt', b''), ('a.exe', b'bad')]:
+            with self.assertRaises(ValueError):
+                self.library.ingest(name, data)
+
+    def test_chunking_has_overlap_and_covers_tail(self):
+        text = ''.join(str(i % 10) for i in range(10000))
+        chunks = chunk_text(text)
+        self.assertTrue(chunks[-1].endswith(text[-300:]))
+        for a, b in zip(chunks, chunks[1:]):
+            self.assertEqual(a[-240:], b[:240])
+
+    def test_image_gets_real_media_embedding_and_preview(self):
+        with patch.object(self.library.embedder, 'embed_media', return_value=[.5,.5]) as embed:
+            source = self.library.ingest('photo.png', b'png bytes')
+        embed.assert_called_once_with(b'png bytes', 'image')
+        self.assertEqual(source['passages'][0]['media_kind'], 'image')
+        self.assertIn('/api/chunks/', source['passages'][0]['preview_url'])
+
+
+class IndexingTests(unittest.TestCase):
+    def setUp(self):
+        self.memory = Memory(db_path=':memory:')
+        self.memory.ingest('I prefer green notebooks.')
+    def tearDown(self):
+        self.memory.close()
+
+    def test_failed_rebuild_preserves_old_vectors_and_model(self):
+        with patch.object(OllamaEmbedder, 'embed_query', return_value=[1., 0.]), patch.object(OllamaEmbedder, 'embed_document', return_value=[1.,0.]):
+            install_embedder(self.memory, 'old', 'http://localhost:11434/api')
+        before = self.memory._storage.get_crystal(1).embedding
+        with patch.object(OllamaEmbedder, 'embed_query', return_value=[0.,1.]), patch.object(OllamaEmbedder, 'embed_document', side_effect=RuntimeError('unavailable')):
+            with self.assertRaises(RuntimeError):
+                install_embedder(self.memory, 'new', 'http://localhost:11434/api')
+        self.assertEqual(self.memory._engine.embedder.model, 'old')
+        self.assertEqual(self.memory._storage.get_crystal(1).embedding, before)
+        self.assertEqual(self.memory._storage.get_meta('embedding_model'), 'old')
+
+    def test_successful_rebuild_updates_all_memory_vectors(self):
+        with patch.object(OllamaEmbedder, 'embed_query', return_value=[0.,1.]), patch.object(OllamaEmbedder, 'embed_document', return_value=[0.,1.]):
+            install_embedder(self.memory, 'new', 'http://localhost:11434/api')
+        self.assertEqual(self.memory._storage.get_crystal(1).embedding, [0.,1.])
+        self.assertEqual(self.memory._storage.get_event(1).embedding, [0.,1.])
+
+    def test_disabling_model_persists_without_losing_vectors(self):
+        with patch.object(OllamaEmbedder, 'embed_query', return_value=[1., 0.]), patch.object(OllamaEmbedder, 'embed_document', return_value=[1.,0.]):
+            install_embedder(self.memory, 'old', 'http://localhost:11434/api')
+        install_embedder(self.memory, '', 'http://localhost:11434/api')
+        self.assertIsNone(self.memory._engine.embedder)
+        self.assertEqual(self.memory._storage.get_meta('embedding_model'), '')
+        self.assertEqual(self.memory._storage.get_meta('embedding_configured'), 'yes')
+        self.assertEqual(self.memory._storage.get_crystal(1).embedding, [1.,0.])
+
+    def test_enabling_same_model_indexes_memories_added_while_disabled(self):
+        with patch.object(OllamaEmbedder, 'embed_query', return_value=[1., 0.]), patch.object(OllamaEmbedder, 'embed_document', return_value=[1.,0.]):
+            install_embedder(self.memory, 'old', 'http://localhost:11434/api')
+            install_embedder(self.memory, '', 'http://localhost:11434/api')
+            self.memory.ingest('This was saved offline.')
+            install_embedder(self.memory, 'old', 'http://localhost:11434/api')
+        self.assertEqual(self.memory._storage.get_crystal(2).embedding, [1.,0.])
+
+
+class StreamTests(unittest.TestCase):
+    def test_reasoning_is_excluded_at_every_possible_split(self):
+        text = '<think>private reasoning</think>The answer is 42.'
+        for split in range(len(text) + 1):
+            parser = AnswerFilter()
+            output = parser.feed(text[:split]) + parser.feed(text[split:]) + parser.feed('', final=True)
+            self.assertEqual(output, 'The answer is 42.', split)
+
+    def test_character_by_character_stream(self):
+        parser = AnswerFilter()
+        output = ''.join(parser.feed(c) for c in 'Hello<think>hide this</think> world') + parser.feed('', final=True)
+        self.assertEqual(output, 'Hello world')
+
+    def test_unclosed_reasoning_is_not_an_answer(self):
+        parser = AnswerFilter()
+        self.assertEqual(parser.feed('<think>unfinished') + parser.feed('', final=True), '')
+
+    def test_sources_are_labeled_and_timestamps_retained(self):
+        prompt = source_context([{'name':'clip.mp4','start_seconds':12.5,'text':'Video frame.'}])
+        self.assertIn('[S1] clip.mp4 at 12.5s', prompt)
+        self.assertIn('not a transcript', prompt)
+
+
+class APITests(unittest.TestCase):
+    def setUp(self):
+        import threading
+        from semantic_gravity_memory.api import server
+        self.server_module = server
+        self.temp = tempfile.TemporaryDirectory()
+        self.memory = Memory(db_path=str(Path(self.temp.name) / 'test.db'))
+        self.library = SourceLibrary(self.memory._storage, Path(self.temp.name) / 'assets')
+        self.original = server._state.copy()
+        server._state.update(memory=self.memory, library=self.library, chat_model='chat-test',
+                             embed_model='', last_scene={}, jobs={}, active_job=None, model_info={
+                                 'chat-test': {'capabilities': ['completion']}})
+        self.server = server.ThreadedHTTPServer(('127.0.0.1', 0), server.BrainHandler)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        self.base = f'http://127.0.0.1:{self.server.server_port}'
+
+    def tearDown(self):
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join()
+        self.server_module._state.clear()
+        self.server_module._state.update(self.original)
+        self.memory.close()
+        self.temp.cleanup()
+
+    def call(self, path, data=None, headers=None):
+        import urllib.request
+        request = urllib.request.Request(self.base + path,
+            data=json.dumps(data).encode() if data is not None else None,
+            headers=headers or {'Content-Type': 'application/json'})
+        return urllib.request.urlopen(request, timeout=10)
+
+    def test_chat_saves_user_but_never_promotes_assistant_to_fact(self):
+        chunks = [{'message': {'content': '<thi'}}, {'message': {'content': 'nk>hidden</think>Answer.'}}, {'done': True}]
+        with patch.object(self.server_module, 'chat_stream', return_value=iter(chunks)):
+            with self.call('/api/answer', {'query': 'I prefer green notebooks.'}) as response:
+                data = response.read().decode()
+        self.assertIn('Answer.', data)
+        self.assertNotIn('hidden', data)
+        events = self.memory._storage.recent_events()
+        self.assertEqual({event.actor for event in events}, {'user', 'assistant'})
+        crystals = self.memory._storage.all_crystals()
+        self.assertEqual(len(crystals), 1)
+        self.assertIn('green notebooks', crystals[0].summary)
+        with self.call('/api/history') as response:
+            history = json.load(response)['messages']
+        self.assertEqual([m['role'] for m in history], ['user', 'assistant'])
+
+    def test_generation_failure_keeps_user_memory(self):
+        with patch.object(self.server_module, 'chat_stream', side_effect=RuntimeError('offline')):
+            with self.call('/api/answer', {'query': 'Remember my preference for green.'}) as response:
+                data = response.read().decode()
+        self.assertIn('offline', data)
+        self.assertEqual(len(self.memory._storage.all_crystals()), 1)
+        self.assertEqual(len(self.memory._storage.recent_events()), 1)
+
+    def test_malformed_json_returns_error(self):
+        import urllib.request
+        import urllib.error
+        request = urllib.request.Request(self.base + '/api/ingest', data=b'{bad', headers={'Content-Type': 'application/json'})
+        with self.assertRaises(urllib.error.HTTPError) as context:
+            urllib.request.urlopen(request)
+        self.assertEqual(context.exception.code, 400)
+        context.exception.close()
+
+    def test_static_traversal_is_not_served(self):
+        import urllib.error
+        with self.assertRaises(urllib.error.HTTPError) as context:
+            self.call('/static/%2e%2e/api/server.py')
+        self.assertEqual(context.exception.code, 404)
+        context.exception.close()
+
+    def test_media_range_support_for_seeking(self):
+        source = self.library.ingest('small.txt', b'0123456789')
+        with self.call(source['url'], headers={'Range': 'bytes=3-5'}) as response:
+            self.assertEqual(response.status, 206)
+            self.assertEqual(response.read(), b'345')
+            self.assertTrue(response.headers['Content-Disposition'].startswith('attachment'))
+
+    def test_import_job_and_duplicate(self):
+        import urllib.request
+        import time
+        for attempt in range(2):
+            request = urllib.request.Request(self.base + '/api/sources?name=test.txt', data=b'A stored original file.', headers={'Content-Type': 'application/octet-stream'})
+            with urllib.request.urlopen(request) as response:
+                job = json.load(response)
+                self.assertEqual(response.status, 202)
+            for _ in range(100):
+                with self.call('/api/jobs/' + job['id']) as response:
+                    job = json.load(response)
+                if job['status'] != 'running':
+                    break
+                time.sleep(.01)
+            self.assertEqual(job['status'], 'done', job)
+        self.assertEqual(len(self.library.list()), 1)
+        self.assertEqual(len(self.memory._storage.all_crystals()), 1)
+
+    def test_cross_origin_write_rejected(self):
+        import urllib.error
+        with self.assertRaises(urllib.error.HTTPError) as context:
+            self.call('/api/ingest', {'text': 'should not save'}, {'Origin': 'https://unrelated.example', 'Content-Type': 'application/json'})
+        self.assertEqual(context.exception.code, 403)
+        context.exception.close()
+        self.assertEqual(self.memory._storage.all_crystals(), [])
+
+
+class DocumentTests(unittest.TestCase):
+    def test_docx_preserves_paragraphs(self):
+        import zipfile
+        from semantic_gravity_memory.sources import extract_document
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'note.docx'
+            with zipfile.ZipFile(path, 'w') as archive:
+                archive.writestr('word/document.xml', '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>First paragraph.</w:t></w:r></w:p><w:p><w:r><w:t>Second paragraph.</w:t></w:r></w:p></w:body></w:document>')
+            self.assertEqual(extract_document(path, '.docx'), 'First paragraph.\nSecond paragraph.')
+
+    def test_pdf_with_text_and_scanned_pdf_failure(self):
+        try:
+            from pypdf import PdfWriter
+            from pypdf.generic import DictionaryObject, NameObject, DecodedStreamObject
+        except ImportError:
+            self.skipTest('Optional pypdf extra is not installed.')
+        from semantic_gravity_memory.sources import extract_document
+        with tempfile.TemporaryDirectory() as folder:
+            blank = Path(folder) / 'blank.pdf'
+            writer = PdfWriter()
+            page = writer.add_blank_page(width=300, height=300)
+            writer.write(blank)
+            with self.assertRaisesRegex(ValueError, 'selectable text'):
+                extract_document(blank, '.pdf')
+            font = DictionaryObject({NameObject('/Type'):NameObject('/Font'), NameObject('/Subtype'):NameObject('/Type1'), NameObject('/BaseFont'):NameObject('/Helvetica')})
+            page[NameObject('/Resources')] = DictionaryObject({NameObject('/Font'):DictionaryObject({NameObject('/F1'):font})})
+            stream = DecodedStreamObject()
+            stream.set_data(b'BT /F1 12 Tf 20 250 Td (The project deadline is November 14.) Tj ET')
+            page[NameObject('/Contents')] = stream
+            path = Path(folder) / 'text.pdf'
+            writer.write(path)
+            text = extract_document(path, '.pdf')
+            self.assertIn('[Page 1]', text)
+            self.assertIn('November 14', text)

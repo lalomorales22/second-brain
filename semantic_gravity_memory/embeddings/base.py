@@ -20,6 +20,12 @@ class BaseEmbedder(ABC):
         """Generate embeddings for multiple texts. Default: sequential calls."""
         return [self.embed(t) for t in texts]
 
+    def embed_query(self, text: str) -> List[float]:
+        return self.embed(text)
+
+    def embed_document(self, text: str) -> List[float]:
+        return self.embed(text)
+
     @abstractmethod
     def dimension(self) -> int:
         """Return the embedding dimension, or 0 if unknown until first call."""

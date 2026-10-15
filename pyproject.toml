@@ -24,6 +24,7 @@ classifiers = [
 
 [project.optional-dependencies]
 gui = []  # tkinter is stdlib — listed here so pip install .[gui] works
+media = ["imageio-ffmpeg>=0.6,<1", "pypdf>=6,<7"]
 
 [project.scripts]
 semantic-gravity-lab = "semantic_gravity_memory.gui.app:main"
