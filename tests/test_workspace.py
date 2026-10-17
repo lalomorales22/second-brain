@@ -55,6 +55,19 @@ class SourceTests(unittest.TestCase):
         self.assertEqual(self.library.list(), [])
         self.assertEqual(list(self.library.asset_dir.iterdir()), [])
 
+    def test_commit_keeps_the_copy_saved_while_this_one_was_embedding(self):
+        prepared = self.library.prepare('slow.txt', b'Same bytes, two imports.')
+        first = self.library.ingest('fast.txt', b'Same bytes, two imports.')
+        result = self.library.commit(prepared)
+        self.assertEqual((result['id'], result['duplicate']), (first['id'], True))
+        self.assertEqual(len(self.library.list()), 1)
+        self.assertEqual([p.name for p in self.library.asset_dir.iterdir()], [first['id']])
+
+    def test_prepare_writes_nothing_to_the_database(self):
+        prepared = self.library.prepare('later.txt', b'Not in the library until committed.')
+        self.assertEqual(self.library.list(), [])
+        self.assertEqual(self.library.commit(prepared)['name'], 'later.txt')
+
     def test_original_survives_reopening_database(self):
         source = self.library.ingest('keep.md', b'Keep the complete original.')
         self.storage.close()
@@ -304,6 +317,38 @@ class APITests(unittest.TestCase):
         self.assertEqual((again['status'], again['result']['id'], again['result']['duplicate']), ('done', source['id'], True))
         self.assertEqual(len(self.library.list()), 1)
         self.assertEqual(len(self.memory._storage.all_crystals()), 1)
+
+    def test_search_and_library_answer_while_an_import_is_embedding(self):
+        import threading
+        import time
+        import urllib.request
+        started, release = threading.Event(), threading.Event()
+
+        class SlowEmbedder(FakeEmbedder):
+            def embed_document(self, text):
+                started.set()
+                release.wait(30)
+                return super().embed_document(text)
+
+        self.library.embedder = SlowEmbedder()
+        try:
+            request = urllib.request.Request(self.base + '/api/sources?name=episode.txt', data=b'A long transcript. ' * 50,
+                                             headers={'Content-Type': 'application/octet-stream'})
+            with urllib.request.urlopen(request) as response:
+                job = json.load(response)
+            self.assertTrue(started.wait(5), 'the import never started embedding')
+            began = time.monotonic()
+            with self.call('/api/search', {'query': 'anything'}) as response:
+                self.assertEqual(response.status, 200)
+            with self.call('/api/sources') as response:
+                self.assertEqual(json.load(response)['sources'], [])  # nothing half-written is visible
+            self.assertLess(time.monotonic() - began, 3, 'search or the library waited for the import')
+        finally:
+            release.set()
+        job = self.wait_job(job)
+        self.assertEqual(job['status'], 'done', job)
+        self.assertTrue(job['result']['crystal_id'])
+        self.assertEqual(len(self.library.list()), 1)
 
     def test_youtube_rejects_non_video_link_before_starting_a_job(self):
         import urllib.error

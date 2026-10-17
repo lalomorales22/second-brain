@@ -54,7 +54,13 @@ def _detect_models(url):
     return pick(embeddings, ['embeddinggemma-2', 'embeddinggemma', 'nomic']), pick(chat, ['qwen3.5:9b', 'qwen3.5:2b', 'gemma4:e4b', 'gpt-oss:20b'])
 
 
-def start_job(label, action):
+def start_job(label, action, locked=True):
+    """Run action(progress) on a background thread; only one job runs at a time.
+
+    With locked=True the whole action holds the server-wide lock. With locked=False the
+    action must take _state['lock'] itself around database reads and writes, so slow
+    work such as embedding a long transcript doesn't stall chat, search, or the library.
+    """
     # Admission is atomic, but the long-running work does not block job polling.
     with _state['job_lock']:
         if _state['active_job']:
@@ -64,9 +70,13 @@ def start_job(label, action):
         _state['jobs'][job_id] = job
         _state['active_job'] = job_id
     def work():
+        progress = lambda message: job.update(message=message)
         try:
-            with _state['lock']:
-                result = action(lambda message: job.update(message=message))
+            if locked:
+                with _state['lock']:
+                    result = action(progress)
+            else:
+                result = action(progress)
             job.update(status='done', result=result, message='Ready')
         except Exception as exc:
             job.update(status='error', error=str(exc), message='Could not finish')
@@ -171,6 +181,15 @@ class BrainHandler(BaseHTTPRequestHandler):
         if length < 0 or length > limit:
             raise ValueError('Request exceeds the size limit.')
         return self.rfile.read(length)
+
+    def _discard_body(self, limit=1024 * 1024):
+        """Read and drop a request body we won't use. Closing a socket with unread data
+        makes Windows reset the connection, and the client may lose our response."""
+        length = int(self.headers.get('Content-Length', '0') or 0)
+        if 0 < length <= limit:
+            self.rfile.read(length)
+        elif length > limit:
+            self.close_connection = True
 
     def _read_json(self):
         value = json.loads(self._body(2 * 1024 * 1024) or b'{}')
@@ -292,6 +311,7 @@ class BrainHandler(BaseHTTPRequestHandler):
         # A private local workspace should not accept cross-site writes.
         origin = self.headers.get('Origin')
         if origin and urlparse(origin).netloc != self.headers.get('Host'):
+            self._discard_body()
             return self._json({'error': 'Cross-origin writes are not allowed.'}, 403)
         try:
             self._post()
@@ -311,22 +331,28 @@ class BrainHandler(BaseHTTPRequestHandler):
                 raise ValueError('A filename is required.')
             data = self._body()
             def ingest(progress):
-                return self._link_memory(self.library.ingest(name, data, progress))
-            return self._json(start_job('Importing ' + name, ingest), 202)
+                # Extraction and embedding run unlocked; only the short write takes the lock.
+                prepared = self.library.prepare(name, data, progress)
+                with _state['lock']:
+                    return self._link_memory(self.library.commit(prepared))
+            return self._json(start_job('Importing ' + name, ingest, locked=False), 202)
         body = self._read_json()
         if path == '/api/sources/youtube':
             url = str(body.get('url', '')).strip()
             language = str(body.get('language') or '').strip() or None
             vid = youtube.video_id(url)  # rejects anything but a single-video link before a job starts
             def import_transcript(progress):
-                existing = self.library.find_by_metadata('video_id', vid)
-                if existing:
-                    return {**self._link_memory(existing), 'duplicate': True}
+                with _state['lock']:
+                    existing = self.library.find_by_metadata('video_id', vid)
+                    if existing:
+                        return {**self._link_memory(existing), 'duplicate': True}
+                # Fetching captions and embedding a long transcript run unlocked.
                 transcript = youtube.fetch_transcript(url, language, progress)
-                document = transcript.document().encode('utf-8')
-                source = self.library.ingest(transcript.filename(), document, progress, transcript.metadata())
-                return self._link_memory(source)
-            return self._json(start_job('Fetching YouTube transcript', import_transcript), 202)
+                prepared = self.library.prepare(transcript.filename(), transcript.document().encode('utf-8'),
+                                                progress, transcript.metadata())
+                with _state['lock']:
+                    return self._link_memory(self.library.commit(prepared))
+            return self._json(start_job('Fetching YouTube transcript', import_transcript, locked=False), 202)
         if path == '/api/config':
             if 'ollama_url' in body and body['ollama_url'] != _state['ollama_url']:
                 raise ValueError('Change the Ollama address with --ollama-url when starting the app.')

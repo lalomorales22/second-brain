@@ -5,6 +5,7 @@ media extras. No uploaded bytes or local paths are sent anywhere except Ollama.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 import hashlib
 import io
 import json
@@ -132,6 +133,22 @@ def media_duration(path):
     return duration
 
 
+@dataclass
+class PreparedSource:
+    """An original that is saved and indexed but not yet in the database (see SourceLibrary.prepare)."""
+    source_id: str = ''
+    name: str = ''
+    kind: str = 'text'
+    digest: str = ''
+    size: int = 0
+    path: Path | None = None
+    description: str = ''
+    metadata: dict = field(default_factory=dict)
+    chunks: list = field(default_factory=list)
+    profile: str = ''
+    duplicate: dict | None = None
+
+
 class SourceLibrary:
     def __init__(self, storage, asset_dir, embedder=None):
         self.storage = storage
@@ -159,9 +176,24 @@ class SourceLibrary:
 
     def ingest(self, name, data, progress=None, metadata=None):
         """Store and index one original. `metadata` is merged into the source's metadata
-        (it may override the default 'coverage' description)."""
+        (it may override the default 'coverage' description).
+
+        This is prepare() followed by commit(). The server runs prepare(), which is slow
+        (extraction and embedding), without its global lock so chat and search stay
+        responsive, and takes the lock only for commit(), one short transaction.
+        """
+        return self.commit(self.prepare(name, data, progress, metadata))
+
+    def prepare(self, name, data, progress=None, metadata=None):
+        """Validate, save the original, extract, and embed, without writing to the database.
+
+        Returns a PreparedSource for commit(). If identical bytes are already stored, it
+        carries that source as `duplicate` and nothing is extracted or embedded. On
+        failure the saved original is removed.
+        """
         progress = progress or (lambda message: None)
         extra_metadata = dict(metadata or {})
+        embedder = self.embedder  # one embedder (and profile) for every chunk of this source
         name = Path(name.replace('\\', '/')).name[:200]
         extension = Path(name).suffix.lower()
         if not data or len(data) > MAX_BYTES:
@@ -169,9 +201,9 @@ class SourceLibrary:
         if extension not in TEXT_EXT | IMAGE_EXT | VIDEO_EXT | AUDIO_EXT | {'.pdf', '.docx'}:
             raise ValueError('Unsupported file type. Use text, PDF, DOCX, PNG/JPEG/WebP, audio, or video.')
         digest = hashlib.sha256(data).hexdigest()
-        existing = self.conn.execute('SELECT id FROM sources WHERE sha256=?', (digest,)).fetchone()
+        existing = self._stored_digest(digest)
         if existing:
-            return {**self.get(existing['id']), 'duplicate': True}
+            return PreparedSource(duplicate={**self.get(existing), 'duplicate': True})
         source_id = uuid.uuid4().hex
         folder = self.asset_dir / source_id
         folder.mkdir()
@@ -220,27 +252,58 @@ class SourceLibrary:
                 chunks = [{'text': part} for part in chunk_text(text)]
                 metadata['coverage'] = 'Complete extracted text, split into overlapping passages.'
             metadata.update(extra_metadata)
-            if kind != 'text' and not self.embedder:
+            if kind != 'text' and not embedder:
                 raise ValueError('Select a multimodal embedding model, such as EmbeddingGemma 2, before importing media.')
             for i, chunk in enumerate(chunks):
                 progress(f'Indexing {name} · {i + 1}/{len(chunks)}')
-                chunk['embedding'] = self._embed_chunk(chunk, self.embedder) if self.embedder else None
+                chunk['embedding'] = self._embed_chunk(chunk, embedder) if embedder else None
             description = (chunks[0]['text'][:500] if kind == 'text' else metadata['coverage'])
-            with self.storage._lock, self.conn:
-                self.conn.execute('INSERT INTO sources VALUES (?,?,?,?,?,?,?,?,?,?,NULL)',
-                                  (source_id, name, kind, mimetypes.guess_type(name)[0] or 'application/octet-stream',
-                                   digest, len(data), now_iso(), str(path), description, json.dumps(metadata)))
-                for i, chunk in enumerate(chunks):
-                    self.conn.execute('''INSERT INTO source_chunks
-                        (source_id,ordinal,text,media_path,media_kind,start_seconds,end_seconds,embedding_json,profile)
-                        VALUES (?,?,?,?,?,?,?,?,?)''',
-                        (source_id, i, chunk['text'], chunk.get('media_path'), chunk.get('media_kind'),
-                         chunk.get('start_seconds'), chunk.get('end_seconds'), json.dumps(chunk['embedding']),
-                         self.embedder.profile if self.embedder else ''))
-            return self.get(source_id)
         except Exception:
-            shutil.rmtree(folder)
+            shutil.rmtree(folder, ignore_errors=True)
             raise
+        return PreparedSource(source_id=source_id, name=name, kind=kind, digest=digest, size=len(data),
+                              path=path, description=description, metadata=metadata, chunks=chunks,
+                              profile=embedder.profile if embedder else '')
+
+    def commit(self, prepared):
+        """Write a prepared source and its passages in one short transaction.
+
+        If identical bytes were committed meanwhile, this copy is discarded and the stored
+        source is returned with duplicate=True. On failure nothing is written and the
+        saved original is removed.
+        """
+        if prepared.duplicate:
+            return prepared.duplicate
+        folder = prepared.path.parent
+        try:
+            with self.storage._lock, self.conn:
+                row = self.conn.execute('SELECT id FROM sources WHERE sha256=?', (prepared.digest,)).fetchone()
+                if not row:
+                    self.conn.execute('INSERT INTO sources VALUES (?,?,?,?,?,?,?,?,?,?,NULL)',
+                                      (prepared.source_id, prepared.name, prepared.kind,
+                                       mimetypes.guess_type(prepared.name)[0] or 'application/octet-stream',
+                                       prepared.digest, prepared.size, now_iso(), str(prepared.path),
+                                       prepared.description, json.dumps(prepared.metadata)))
+                    for i, chunk in enumerate(prepared.chunks):
+                        self.conn.execute('''INSERT INTO source_chunks
+                            (source_id,ordinal,text,media_path,media_kind,start_seconds,end_seconds,embedding_json,profile)
+                            VALUES (?,?,?,?,?,?,?,?,?)''',
+                            (prepared.source_id, i, chunk['text'], chunk.get('media_path'), chunk.get('media_kind'),
+                             chunk.get('start_seconds'), chunk.get('end_seconds'), json.dumps(chunk['embedding']),
+                             prepared.profile))
+        except Exception:
+            shutil.rmtree(folder, ignore_errors=True)
+            raise
+        if row:
+            shutil.rmtree(folder, ignore_errors=True)
+            return {**self.get(row['id']), 'duplicate': True}
+        return self.get(prepared.source_id)
+
+    def _stored_digest(self, digest):
+        """Id of the source with these exact bytes, if any."""
+        with self.storage._lock:
+            row = self.conn.execute('SELECT id FROM sources WHERE sha256=?', (digest,)).fetchone()
+        return row['id'] if row else None
 
     @staticmethod
     def _embed_chunk(chunk, embedder):
