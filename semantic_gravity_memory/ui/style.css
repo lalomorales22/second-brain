@@ -1076,6 +1076,10 @@ dialog::backdrop {
   background: #ffffff04;
   border-radius: 7px;
   color: var(--amber);
+  transition: opacity 0.4s ease;
+}
+.import-item.fading {
+  opacity: 0;
 }
 .import-item.done {
   color: var(--accent);

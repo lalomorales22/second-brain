@@ -57,6 +57,29 @@ const post = (path, body = {}) =>
 function showDialog(id) {
   if (!$(id).open) $(id).showModal();
 }
+// Clicking the dimmed area around a dialog closes it. Clicks on the dialog's own padding
+// also target the dialog, so compare with its box; and both the press and the release must
+// be outside, so selecting text and letting go past the edge doesn't close it.
+function closeOnOutsideClick(dialog) {
+  let pressedOutside = false;
+  const outside = (event) => {
+    if (event.target !== dialog) return false;
+    const box = dialog.getBoundingClientRect();
+    return (
+      event.clientX < box.left ||
+      event.clientX > box.right ||
+      event.clientY < box.top ||
+      event.clientY > box.bottom
+    );
+  };
+  dialog.addEventListener("pointerdown", (event) => {
+    pressedOutside = outside(event);
+  });
+  dialog.addEventListener("click", (event) => {
+    if (pressedOutside && outside(event)) dialog.close();
+    pressedOutside = false;
+  });
+}
 function showView(view) {
   document
     .querySelectorAll(".main-view")
@@ -281,11 +304,28 @@ async function pollJob(job, onProgress) {
   if (job.status === "error") throw new Error(job.error);
   return job.result;
 }
+// Import notes don't pile up: starting an import (or closing the dialog) clears earlier
+// finished notes, a "Saved" note fades after a few seconds, and an error stays until then.
+function clearFinishedImports() {
+  $("import-progress")
+    .querySelectorAll(".import-item.done, .import-item.error")
+    .forEach((item) => item.remove());
+}
+function finishImportItem(item, ok, text) {
+  item.classList.add(ok ? "done" : "error");
+  item.textContent = text;
+  if (ok)
+    setTimeout(() => {
+      item.classList.add("fading");
+      setTimeout(() => item.remove(), 400);
+    }, 6000);
+}
 async function importFiles(files) {
   if (state.importing) return toast("An import is already in progress.");
   const chosen = Array.from(files);
   if (!chosen.length) return;
   state.importing = true;
+  clearFinishedImports();
   showDialog("import-dialog");
   $("file-input").disabled = true;
   try {
@@ -309,11 +349,13 @@ async function importFiles(files) {
           item.textContent = text;
           status(text);
         });
-        item.classList.add("done");
-        item.textContent = `${result.duplicate ? "Already saved" : "Saved"} · ${file.name} · ${result.chunks} searchable excerpts`;
+        finishImportItem(
+          item,
+          true,
+          `${result.duplicate ? "Already saved" : "Saved"} · ${file.name} · ${result.chunks} searchable excerpts`,
+        );
       } catch (error) {
-        item.classList.add("error");
-        item.textContent = `${file.name}: ${error.message}`;
+        finishImportItem(item, false, `${file.name}: ${error.message}`);
       }
     }
     await refresh();
@@ -328,6 +370,7 @@ async function importYouTube(url) {
   if (!url) return toast("Paste a YouTube link first.");
   if (state.importing) return toast("An import is already in progress.");
   state.importing = true;
+  clearFinishedImports();
   showDialog("import-dialog");
   $("btn-youtube").disabled = true;
   $("file-input").disabled = true;
@@ -341,13 +384,15 @@ async function importYouTube(url) {
       item.textContent = text;
       status(text);
     });
-    item.classList.add("done");
-    item.textContent = `${result.duplicate ? "Already saved" : "Saved"} · ${result.name} · ${result.chunks} searchable excerpts`;
+    finishImportItem(
+      item,
+      true,
+      `${result.duplicate ? "Already saved" : "Saved"} · ${result.name} · ${result.chunks} searchable excerpts`,
+    );
     $("youtube-url").value = "";
     await refresh();
   } catch (error) {
-    item.classList.add("error");
-    item.textContent = `YouTube: ${error.message}`;
+    finishImportItem(item, false, `YouTube: ${error.message}`);
   } finally {
     state.importing = false;
     $("btn-youtube").disabled = !state.config.capabilities?.youtube;
@@ -596,6 +641,8 @@ async function initWorkspace() {
     .forEach((button) =>
       button.addEventListener("click", () => button.closest("dialog").close()),
     );
+  document.querySelectorAll("dialog").forEach(closeOnOutsideClick);
+  $("import-dialog").addEventListener("close", clearFinishedImports);
   document
     .querySelectorAll("[data-view]")
     .forEach((button) =>
@@ -712,8 +759,7 @@ async function initWorkspace() {
         await request("/api/jobs/" + state.config.active_job),
         (text) => (item.textContent = text),
       );
-      item.classList.add("done");
-      item.textContent = "Finished.";
+      finishImportItem(item, true, "Finished.");
       await refresh();
     }
   } catch (error) {
