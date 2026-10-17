@@ -11,9 +11,34 @@ Ollama provides embeddings and chat; originals stay on disk.
 # Open http://127.0.0.1:8487
 ```
 
-On macOS, double-click **Start Second Brain.command**. The launcher creates an
-isolated `.venv` if necessary and installs the optional media dependencies.
-Python 3.10+ and a running Ollama installation are required.
+On macOS, double-click **Start Second Brain.command**. On Windows, double-click
+**start.bat**. The launcher creates an isolated `.venv` if necessary and installs
+the optional media dependencies. Python 3.10+ and a running Ollama installation
+are required.
+
+### Desktop window
+
+To use the workspace in its own window instead of a browser tab (Windows and
+macOS, through the system web view via `pywebview`):
+
+```bash
+pip install -e '.[media,desktop]'
+second-brain-desktop
+```
+
+On Windows, double-click **start-desktop.bat**. The window starts Ollama if it is
+not already running, serves the same workspace on `127.0.0.1` (port 8487, or a
+free port if that one is busy), and stops the server when you close it.
+
+An Electron shell with the same behaviour lives in `desktop/`. It needs Node.js
+and uses the repo's `.venv` for the server:
+
+```bash
+cd desktop && npm install && npm start
+```
+
+On Windows, double-click **start-electron.bat**, which does the same. It is a
+dev-machine wrapper: Python and the models are not bundled into the app.
 
 Recommended installed models for this workspace:
 

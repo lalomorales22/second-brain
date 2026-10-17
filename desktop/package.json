@@ -1,0 +1,13 @@
+{
+  "name": "second-brain-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Electron window for the Second Brain workspace (uses the repo's .venv for the server)",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "44.5.1"
+  }
+}

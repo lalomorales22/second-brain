@@ -25,11 +25,13 @@ classifiers = [
 [project.optional-dependencies]
 gui = []  # tkinter is stdlib — listed here so pip install .[gui] works
 media = ["imageio-ffmpeg>=0.6,<1", "pypdf>=6,<7"]
+desktop = ["pywebview>=5,<6"]  # native window via the system web view (WebView2 / WebKit)
 
 [project.scripts]
 semantic-gravity-lab = "semantic_gravity_memory.gui.app:main"
 semantic-gravity-brain = "semantic_gravity_memory.api.server:main"
 second-brain = "semantic_gravity_memory.api.server:main"
+second-brain-desktop = "semantic_gravity_memory.desktop:main"
 
 [tool.setuptools.packages.find]
 include = ["semantic_gravity_memory*"]

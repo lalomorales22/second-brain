@@ -37,3 +37,6 @@ Thumbs.db
 
 # Claude Code memory
 .claude/
+
+# Electron shell
+desktop/node_modules/

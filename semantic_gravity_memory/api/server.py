@@ -446,26 +446,43 @@ class BrainHandler(BaseHTTPRequestHandler):
 ThreadedHTTPServer = ThreadingHTTPServer
 
 
+def create_server(port=DEFAULT_PORT, ollama_url=DEFAULT_OLLAMA_URL, embed_model=None, chat_model=None,
+                  db_path=None, host='127.0.0.1'):
+    """Open the database, choose models, and bind the HTTP server without serving yet.
+
+    Returns (server, memory). The caller owns both: call server.serve_forever(),
+    then server.server_close() and memory.close() when done. Port 0 binds any free port.
+    """
+    memory = Memory(db_path=db_path)
+    try:
+        path = Path(memory._storage.db_path).resolve()
+        library = SourceLibrary(memory._storage, path.parent / (path.stem + '-assets'))
+        _state.update(memory=memory, library=library, ollama_url=ollama_url.rstrip('/'))
+        detected_embed, detected_chat = _detect_models(ollama_url)
+        chat_model = chat_model or memory._storage.get_meta('chat_model') or detected_chat or ''
+        if embed_model is None:
+            embed_model = (memory._storage.get_meta('embedding_model')
+                           if memory._storage.get_meta('embedding_configured') else detected_embed) or ''
+        _state['chat_model'] = chat_model
+        try:
+            install_embedder(memory, embed_model, ollama_url, library)
+            _state['embed_model'] = embed_model
+        except Exception as exc:
+            _state.update(embed_model='', warning='Embeddings unavailable: ' + str(exc))
+            print(_state['warning'], flush=True)
+        server = ThreadingHTTPServer((host, port), BrainHandler)
+    except Exception:
+        memory.close()
+        raise
+    port = server.server_address[1]
+    print(f'Second Brain: http://{host}:{port}\nDatabase: {path}\nEmbeddings: {_state["embed_model"]}\nChat: {chat_model}', flush=True)
+    return server, memory
+
+
 def run(port=DEFAULT_PORT, ollama_url=DEFAULT_OLLAMA_URL, embed_model=None, chat_model=None,
         db_path=None, host='127.0.0.1'):
-    memory = Memory(db_path=db_path)
-    path = Path(memory._storage.db_path).resolve()
-    library = SourceLibrary(memory._storage, path.parent / (path.stem + '-assets'))
-    _state.update(memory=memory, library=library, ollama_url=ollama_url.rstrip('/'))
-    detected_embed, detected_chat = _detect_models(ollama_url)
-    chat_model = chat_model or memory._storage.get_meta('chat_model') or detected_chat or ''
-    if embed_model is None:
-        embed_model = (memory._storage.get_meta('embedding_model')
-                       if memory._storage.get_meta('embedding_configured') else detected_embed) or ''
-    _state['chat_model'] = chat_model
-    try:
-        install_embedder(memory, embed_model, ollama_url, library)
-        _state['embed_model'] = embed_model
-    except Exception as exc:
-        _state.update(embed_model='', warning='Embeddings unavailable: ' + str(exc))
-        print(_state['warning'], flush=True)
-    server = ThreadingHTTPServer((host, port), BrainHandler)
-    print(f'Second Brain: http://{host}:{port}\nDatabase: {path}\nEmbeddings: {_state["embed_model"]}\nChat: {chat_model}', flush=True)
+    server, memory = create_server(port=port, ollama_url=ollama_url, embed_model=embed_model,
+                                   chat_model=chat_model, db_path=db_path, host=host)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
