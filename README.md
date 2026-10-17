@@ -63,6 +63,7 @@ rebuild fails, the old index remains usable. Chat and embedding choices persist.
 | PNG, JPEG, WebP | Native image embeddings | Vision embedding model required |
 | MP4, MOV, WebM, MKV | Up to 12 evenly spaced image frames with timestamps | 5 minutes; soundtrack and unsampled events are not indexed |
 | WAV, MP3, M4A, OGG, FLAC, AAC | Native audio embeddings in 30-second segments | 5 minutes; search/playback, no transcription |
+| YouTube link | The video's captions, saved as a timestamped Markdown transcript | Needs captions (human or automatic); no length limit beyond 1 million characters |
 
 All files are limited to **64 MB**. Byte-identical uploads are deduplicated. A
 failed import does not leave a partially indexed source. Text can be imported
@@ -76,6 +77,22 @@ links; the chat model is told that they are not transcripts.
 
 PDF parsing uses `pypdf`; audio/video decoding uses FFmpeg, either installed on
 PATH or bundled by `imageio-ffmpeg`. These are optional: `pip install -e '.[media]'`.
+
+### YouTube transcripts
+
+Paste a YouTube link in **Add to your brain** (or drag a link from your browser
+onto the drop zone) to save a video's full transcript, which is ideal for
+podcasts and talks. `yt-dlp` fetches the video details and one caption track;
+the video and audio are never downloaded. Human-made captions are preferred over
+automatic ones, and the spoken language over machine translations. The
+transcript keeps a `[hh:mm:ss]` timestamp at each paragraph, and in the source
+view those timestamps open the video at that moment. Adding the same video
+again, by any link form, is recognised without fetching it twice.
+
+Install with `pip install -e '.[youtube]'` (the launchers do this). YouTube
+changes often, so when imports start failing, update with `pip install -U yt-dlp`.
+Indexing time grows with length: on a laptop CPU, a three-hour episode can take
+several minutes to embed, and chat waits until it finishes.
 
 ## Talk to your material
 
@@ -161,6 +178,7 @@ The web workspace adds a persistent source library and source-grounded chat on t
 | Endpoint | Purpose |
 | --- | --- |
 | `POST /api/sources?name=filename.ext` | Upload raw bytes; returns an import job |
+| `POST /api/sources/youtube` | Import a video's transcript for `{url, language?}`; returns an import job |
 | `GET /api/jobs/{id}` | Import/reindex progress, result, or error |
 | `GET /api/sources` | Source library |
 | `GET /api/sources/{id}` | Metadata and extracted passages |

@@ -188,9 +188,20 @@ async function openSource(id, seconds, chunkId) {
     const source = await request(`/api/sources/${id}`);
     state.source = source;
     $("source-title").textContent = source.name;
-    $("source-kind").textContent =
-      `${source.kind.toUpperCase()} · ${bytes(source.bytes)}`;
+    const fromYouTube = source.metadata.origin === "youtube";
+    $("source-kind").textContent = fromYouTube
+      ? `YOUTUBE TRANSCRIPT · ${source.metadata.channel || bytes(source.bytes)}`
+      : `${source.kind.toUpperCase()} · ${bytes(source.bytes)}`;
     $("source-meta").textContent = source.metadata.coverage;
+    if (fromYouTube) {
+      const link = document.createElement("a");
+      link.href = source.metadata.url;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      link.className = "timecode";
+      link.textContent = "Watch on YouTube ↗";
+      $("source-meta").append(" ", link);
+    }
     $("download-source").href = source.url;
     $("source-preview").replaceChildren();
     $("source-passages").replaceChildren();
@@ -231,7 +242,10 @@ async function openSource(id, seconds, chunkId) {
       source.passages.forEach((passage, i) => {
         const details = document.createElement("details");
         details.className = "passage";
-        details.innerHTML = `<summary>${source.kind === "audio" ? "Segment at " + timestamp(passage.start_seconds) : "Passage " + (i + 1)}</summary><pre>${escapeHTML(passage.text)}</pre>`;
+        const body = fromYouTube
+          ? linkTimecodes(escapeHTML(passage.text), source.metadata.url)
+          : escapeHTML(passage.text);
+        details.innerHTML = `<summary>${source.kind === "audio" ? "Segment at " + timestamp(passage.start_seconds) : "Passage " + (i + 1)}</summary><pre>${body}</pre>`;
         details.dataset.chunkId = passage.id;
         details.open = chunkId
           ? passage.id === chunkId
@@ -308,6 +322,53 @@ async function importFiles(files) {
     $("file-input").disabled = false;
     $("file-input").value = "";
   }
+}
+async function importYouTube(url) {
+  url = String(url || "").trim();
+  if (!url) return toast("Paste a YouTube link first.");
+  if (state.importing) return toast("An import is already in progress.");
+  state.importing = true;
+  showDialog("import-dialog");
+  $("btn-youtube").disabled = true;
+  $("file-input").disabled = true;
+  const item = document.createElement("div");
+  item.className = "import-item";
+  item.textContent = "Fetching transcript…";
+  $("import-progress").appendChild(item);
+  try {
+    const job = await post("/api/sources/youtube", { url });
+    const result = await pollJob(job, (text) => {
+      item.textContent = text;
+      status(text);
+    });
+    item.classList.add("done");
+    item.textContent = `${result.duplicate ? "Already saved" : "Saved"} · ${result.name} · ${result.chunks} searchable excerpts`;
+    $("youtube-url").value = "";
+    await refresh();
+  } catch (error) {
+    item.classList.add("error");
+    item.textContent = `YouTube: ${error.message}`;
+  } finally {
+    state.importing = false;
+    $("btn-youtube").disabled = !state.config.capabilities?.youtube;
+    $("file-input").disabled = false;
+  }
+}
+function applyCapabilities() {
+  const ready = Boolean(state.config.capabilities?.youtube);
+  $("youtube-url").disabled = !ready;
+  $("btn-youtube").disabled = !ready;
+  if (!ready)
+    $("youtube-hint").textContent =
+      'YouTube transcripts need yt-dlp. Install it with: pip install -e ".[youtube]", then restart.';
+}
+// "[00:12:34]" markers in a YouTube transcript become links that open the video at that moment.
+function linkTimecodes(html, videoUrl) {
+  return html.replace(
+    /\[(\d{2}):(\d{2}):(\d{2})\]/g,
+    (match, h, m, s) =>
+      `<a class="timecode" href="${escapeHTML(videoUrl)}&amp;t=${+h * 3600 + +m * 60 + +s}s" target="_blank" rel="noopener noreferrer">${match}</a>`,
+  );
 }
 async function saveNote(fromChat = false) {
   const text = (fromChat ? $("chat-input") : $("note-text")).value.trim();
@@ -564,7 +625,24 @@ async function initWorkspace() {
   drop.addEventListener("drop", (event) => {
     event.preventDefault();
     drop.classList.remove("drag-over");
+    if (!event.dataTransfer.files.length) {
+      // A link dragged from a browser tab arrives as a URL, not a file.
+      const link = (
+        event.dataTransfer.getData("text/uri-list") ||
+        event.dataTransfer.getData("text/plain")
+      )
+        .split(/\r?\n/)
+        .find((line) => line.trim() && !line.startsWith("#"));
+      if (link && /youtu\.?be/i.test(link)) {
+        $("youtube-url").value = link.trim();
+        return importYouTube(link);
+      }
+    }
     importFiles(event.dataTransfer.files);
+  });
+  $("youtube-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    importYouTube($("youtube-url").value);
   });
   drop.addEventListener("keydown", (event) => {
     if (event.key === "Enter") $("file-input").click();
@@ -618,6 +696,7 @@ async function initWorkspace() {
     state.config = await request("/api/config");
     $("active-chat-model").textContent =
       state.config.chat_model || "Select a chat model";
+    applyCapabilities();
     if (state.config.warning) toast(state.config.warning);
     const history = await request("/api/history");
     history.messages.forEach((item) =>

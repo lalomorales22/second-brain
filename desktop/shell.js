@@ -3,7 +3,7 @@
 // Starts the Python workspace server from the repo's virtual environment and shows it in a window.
 // This is a dev-machine wrapper: it does not bundle Python or the models.
 
-const { app, BrowserWindow, dialog } = require('electron');
+const { app, BrowserWindow, dialog, shell } = require('electron');
 const { spawn, spawnSync } = require('child_process');
 const fs = require('fs');
 const http = require('http');
@@ -121,6 +121,11 @@ function createWindow(url) {
     webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true },
   });
   win.on('page-title-updated', (event) => event.preventDefault());
+  // Links that open a new window (e.g. "Watch on YouTube") go to the system browser.
+  win.webContents.setWindowOpenHandler(({ url: target }) => {
+    if (/^https?:\/\//i.test(target) && !target.startsWith(url)) shell.openExternal(target);
+    return { action: 'deny' };
+  });
   win.loadURL(url);
   return win;
 }

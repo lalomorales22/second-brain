@@ -294,6 +294,26 @@
           >Up to 64 MB per file · audio/video clips up to 5 minutes</small
         ></label
       >
+      <div class="or-divider">OR PASTE A YOUTUBE LINK</div>
+      <form id="youtube-form" class="youtube-form">
+        <input
+          id="youtube-url"
+          class="field"
+          type="url"
+          inputmode="url"
+          autocomplete="off"
+          spellcheck="false"
+          aria-label="YouTube video link"
+          aria-describedby="youtube-hint"
+          placeholder="https://www.youtube.com/watch?v=…"
+        /><button id="btn-youtube" class="primary" type="submit">
+          Get transcript <span>↗</span>
+        </button>
+      </form>
+      <small id="youtube-hint" class="youtube-hint"
+        >Saves the video's captions as a searchable, timestamped transcript.
+        Great for podcasts. The video itself is not downloaded.</small
+      >
       <div class="or-divider">OR LEAVE A THOUGHT</div>
       <input
         id="note-title"
@@ -312,8 +332,9 @@
       </button>
       <div id="import-progress" aria-live="polite"></div>
       <p class="fine-print">
-        Video uses sampled frames. Audio is searchable and playable, without a
-        transcript. Scanned PDFs need OCR.
+        Video files use sampled frames. Audio is searchable and playable, without a
+        transcript. For spoken content, a YouTube link brings in the full transcript.
+        Scanned PDFs need OCR.
       </p>
     </dialog>
     <dialog id="source-dialog" class="wide-dialog">

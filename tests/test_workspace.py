@@ -268,6 +268,60 @@ class APITests(unittest.TestCase):
         self.assertEqual(len(self.library.list()), 1)
         self.assertEqual(len(self.memory._storage.all_crystals()), 1)
 
+    def wait_job(self, job):
+        import time
+        for _ in range(200):
+            if job['status'] != 'running':
+                break
+            time.sleep(.01)
+            with self.call('/api/jobs/' + job['id']) as response:
+                job = json.load(response)
+        return job
+
+    def test_youtube_link_imports_transcript_once(self):
+        from semantic_gravity_memory import youtube
+        transcript = youtube.Transcript(video_id='dQw4w9WgXcQ', title='Podcast #7: Memory', channel='The Show',
+                                        duration=120, language='en', language_name='English', captions='auto-generated',
+                                        cues=[(0, 'Welcome to the show.'), (5, 'Today the code word is PEAR-739.')])
+        with self.call('/api/config') as response:
+            self.assertIn('youtube', json.load(response)['capabilities'])
+        with patch.object(youtube, 'fetch_transcript', return_value=transcript) as fetch:
+            with self.call('/api/sources/youtube', {'url': 'https://youtu.be/dQw4w9WgXcQ'}) as response:
+                self.assertEqual(response.status, 202)
+                job = self.wait_job(json.load(response))
+            self.assertEqual(job['status'], 'done', job)
+            source = job['result']
+            self.assertEqual(source['name'], 'Podcast #7- Memory (YouTube).md')
+            self.assertEqual((source['kind'], source['metadata']['origin'], source['metadata']['video_id']),
+                             ('text', 'youtube', 'dQw4w9WgXcQ'))
+            self.assertTrue(source['crystal_id'])
+            self.assertIn('[00:00:00] Welcome to the show. Today the code word is PEAR-739.',
+                          self.library.get(source['id'])['passages'][0]['text'])
+            # The same video by another link form is recognised without fetching again.
+            with self.call('/api/sources/youtube', {'url': 'https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=30s'}) as response:
+                again = self.wait_job(json.load(response))
+            self.assertEqual(fetch.call_count, 1)
+        self.assertEqual((again['status'], again['result']['id'], again['result']['duplicate']), ('done', source['id'], True))
+        self.assertEqual(len(self.library.list()), 1)
+        self.assertEqual(len(self.memory._storage.all_crystals()), 1)
+
+    def test_youtube_rejects_non_video_link_before_starting_a_job(self):
+        import urllib.error
+        with self.assertRaises(urllib.error.HTTPError) as context:
+            self.call('/api/sources/youtube', {'url': 'https://www.youtube.com/playlist?list=PL123'})
+        self.assertEqual(context.exception.code, 400)
+        self.assertIn('single YouTube video', json.load(context.exception)['error'])
+        context.exception.close()
+        self.assertIsNone(self.server_module._state['active_job'])
+
+    def test_failed_youtube_fetch_reports_error_and_saves_nothing(self):
+        from semantic_gravity_memory import youtube
+        with patch.object(youtube, 'fetch_transcript', side_effect=ValueError('YouTube: Video unavailable')):
+            with self.call('/api/sources/youtube', {'url': 'https://youtu.be/dQw4w9WgXcQ'}) as response:
+                job = self.wait_job(json.load(response))
+        self.assertEqual((job['status'], job['error']), ('error', 'YouTube: Video unavailable'))
+        self.assertEqual(self.library.list(), [])
+
     def test_cross_origin_write_rejected(self):
         import urllib.error
         with self.assertRaises(urllib.error.HTTPError) as context:

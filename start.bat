@@ -8,9 +8,9 @@ if not exist ".venv\Scripts\python.exe" (
     echo Python 3.10+ is required. Install it from https://python.org and retry.
     exit /b 1
   )
-  ".venv\Scripts\python.exe" -m pip install -e ".[media]"
+  ".venv\Scripts\python.exe" -m pip install -e ".[media,youtube]"
 )
-".venv\Scripts\python.exe" -c "import pypdf, imageio_ffmpeg" >nul 2>&1 || ".venv\Scripts\python.exe" -m pip install -e ".[media]"
+".venv\Scripts\python.exe" -c "import pypdf, imageio_ffmpeg, yt_dlp" >nul 2>&1 || ".venv\Scripts\python.exe" -m pip install -e ".[media,youtube]"
 curl -s -o nul --max-time 2 http://127.0.0.1:11434/api/tags >nul 2>&1 || (
   echo Starting Ollama...
   start "" "%LOCALAPPDATA%\Programs\Ollama\ollama app.exe"

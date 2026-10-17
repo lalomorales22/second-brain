@@ -47,7 +47,8 @@ def capabilities():
         pdf = True
     except ImportError:
         pdf = False
-    return {'pdf': pdf, 'media': bool(ffmpeg_path()), 'max_bytes': MAX_BYTES,
+    from semantic_gravity_memory import youtube
+    return {'pdf': pdf, 'media': bool(ffmpeg_path()), 'youtube': youtube.available(), 'max_bytes': MAX_BYTES,
             'max_duration': MAX_DURATION, 'video_frames': 12,
             'extensions': sorted(TEXT_EXT | IMAGE_EXT | VIDEO_EXT | AUDIO_EXT | {'.pdf', '.docx'})}
 
@@ -156,8 +157,11 @@ class SourceLibrary:
         ''')
         self.conn.commit()
 
-    def ingest(self, name, data, progress=None):
+    def ingest(self, name, data, progress=None, metadata=None):
+        """Store and index one original. `metadata` is merged into the source's metadata
+        (it may override the default 'coverage' description)."""
         progress = progress or (lambda message: None)
+        extra_metadata = dict(metadata or {})
         name = Path(name.replace('\\', '/')).name[:200]
         extension = Path(name).suffix.lower()
         if not data or len(data) > MAX_BYTES:
@@ -215,6 +219,7 @@ class SourceLibrary:
                 text = extract_document(path, extension)
                 chunks = [{'text': part} for part in chunk_text(text)]
                 metadata['coverage'] = 'Complete extracted text, split into overlapping passages.'
+            metadata.update(extra_metadata)
             if kind != 'text' and not self.embedder:
                 raise ValueError('Select a multimodal embedding model, such as EmbeddingGemma 2, before importing media.')
             for i, chunk in enumerate(chunks):
@@ -249,6 +254,14 @@ class SourceLibrary:
             vector = self._embed_chunk(dict(row), embedder)
             updates.append(('source_chunks', 'embedding_json', row['id'], json.dumps(vector)))
         return updates
+
+    def find_by_metadata(self, key, value):
+        """The source whose metadata has key == value (e.g. a YouTube video_id), or None."""
+        if not re.fullmatch(r'[a-z_]+', key):
+            raise ValueError('Invalid metadata key.')
+        row = self.conn.execute('SELECT id FROM sources WHERE json_extract(metadata, ?) = ? LIMIT 1',
+                                ('$.' + key, value)).fetchone()
+        return self.get(row['id']) if row else None
 
     def list(self):
         return [self._public(row) for row in self.conn.execute('''SELECT s.*, COUNT(c.id) AS chunks

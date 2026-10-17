@@ -13,7 +13,7 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
-from semantic_gravity_memory import Memory
+from semantic_gravity_memory import Memory, youtube
 from semantic_gravity_memory.models import Event
 from semantic_gravity_memory.sources import SourceLibrary, capabilities, MAX_BYTES
 from semantic_gravity_memory.embeddings.indexing import install_embedder
@@ -178,6 +178,17 @@ class BrainHandler(BaseHTTPRequestHandler):
             raise ValueError('Expected a JSON object.')
         return value
 
+    def _link_memory(self, source):
+        """Give an imported source its memory node (once), so it appears in recall and the graph."""
+        if not source.get('crystal_id'):
+            description = source['description'] if source['kind'] == 'text' else ''
+            _, cid = self.memory.ingest(f'Source: {source["name"]}\n{description}',
+                kind='source_import', context={'source_id': source['id']})
+            with self.memory._storage.conn:
+                self.memory._storage.conn.execute('UPDATE sources SET crystal_id=? WHERE id=?', (cid, source['id']))
+            source['crystal_id'] = cid
+        return source
+
     def _file(self, path, download=False, filename=None):
         path = Path(path)
         if not path.is_file():
@@ -300,17 +311,22 @@ class BrainHandler(BaseHTTPRequestHandler):
                 raise ValueError('A filename is required.')
             data = self._body()
             def ingest(progress):
-                source = self.library.ingest(name, data, progress)
-                if not source.get('crystal_id'):
-                    description = source['description'] if source['kind'] == 'text' else ''
-                    _, cid = self.memory.ingest(f'Source: {source["name"]}\n{description}',
-                        kind='source_import', context={'source_id': source['id']})
-                    with self.memory._storage.conn:
-                        self.memory._storage.conn.execute('UPDATE sources SET crystal_id=? WHERE id=?', (cid, source['id']))
-                    source['crystal_id'] = cid
-                return source
+                return self._link_memory(self.library.ingest(name, data, progress))
             return self._json(start_job('Importing ' + name, ingest), 202)
         body = self._read_json()
+        if path == '/api/sources/youtube':
+            url = str(body.get('url', '')).strip()
+            language = str(body.get('language') or '').strip() or None
+            vid = youtube.video_id(url)  # rejects anything but a single-video link before a job starts
+            def import_transcript(progress):
+                existing = self.library.find_by_metadata('video_id', vid)
+                if existing:
+                    return {**self._link_memory(existing), 'duplicate': True}
+                transcript = youtube.fetch_transcript(url, language, progress)
+                document = transcript.document().encode('utf-8')
+                source = self.library.ingest(transcript.filename(), document, progress, transcript.metadata())
+                return self._link_memory(source)
+            return self._json(start_job('Fetching YouTube transcript', import_transcript), 202)
         if path == '/api/config':
             if 'ollama_url' in body and body['ollama_url'] != _state['ollama_url']:
                 raise ValueError('Change the Ollama address with --ollama-url when starting the app.')
