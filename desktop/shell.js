@@ -169,6 +169,19 @@ process.on('uncaughtException', (error) => {
 // Entry point used by main.js. (Electron's require.main is its own bootstrap, so the
 // usual "require.main === module" guard cannot tell the entry script from a library import.)
 function run() {
+  // One app at a time: launching again (e.g. typing second-brain twice) brings the open
+  // window forward instead of starting a second server on the same database.
+  if (!app.requestSingleInstanceLock()) {
+    app.quit();
+    return;
+  }
+  app.on('second-instance', () => {
+    const win = BrowserWindow.getAllWindows()[0];
+    if (!win) return;
+    if (win.isMinimized()) win.restore();
+    win.show();
+    win.focus();
+  });
   app.whenReady().then(main);
 }
 
