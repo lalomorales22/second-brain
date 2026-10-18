@@ -121,9 +121,11 @@ function createWindow(url) {
     webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true },
   });
   win.on('page-title-updated', (event) => event.preventDefault());
-  // Links that open a new window (e.g. "Watch on YouTube") go to the system browser.
+  // Links that open a new window: the app's own pages (e.g. an original file) get an app
+  // window; anything else (e.g. "Watch on YouTube") goes to the system browser.
   win.webContents.setWindowOpenHandler(({ url: target }) => {
-    if (/^https?:\/\//i.test(target) && !target.startsWith(url)) shell.openExternal(target);
+    if (target.startsWith(url)) return { action: 'allow' };
+    if (/^https?:\/\//i.test(target)) shell.openExternal(target);
     return { action: 'deny' };
   });
   win.loadURL(url);

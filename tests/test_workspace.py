@@ -63,6 +63,21 @@ class SourceTests(unittest.TestCase):
         self.assertEqual(len(self.library.list()), 1)
         self.assertEqual([p.name for p in self.library.asset_dir.iterdir()], [first['id']])
 
+    def test_search_within_one_source_returns_its_best_passages(self):
+        first = self.library.ingest('first.txt', ('filler text ' * 300 + '\nThe code is PEAR-739.').encode())
+        self.library.ingest('second.txt', b'The code is PEAR-739 here as well.')
+        hits = self.library.search('What is the code?', limit=2, source_id=first['id'])
+        self.assertTrue(hits)
+        self.assertEqual({hit['source_id'] for hit in hits}, {first['id']})
+        self.assertIn('PEAR-739', hits[0]['text'])
+
+    def test_prebuilt_passages_replace_default_chunking(self):
+        source = self.library.ingest('repo.md', b'# Whole document', passages=['File: a.py (lines 1-2)\nx', 'File: b.py (lines 1-1)\ny'])
+        self.assertEqual([p['text'] for p in self.library.get(source['id'])['passages']],
+                         ['File: a.py (lines 1-2)\nx', 'File: b.py (lines 1-1)\ny'])
+        with self.assertRaisesRegex(ValueError, 'no text'):
+            self.library.ingest('empty.md', b'# Other document', passages=['  '])
+
     def test_prepare_writes_nothing_to_the_database(self):
         prepared = self.library.prepare('later.txt', b'Not in the library until committed.')
         self.assertEqual(self.library.list(), [])
@@ -349,6 +364,71 @@ class APITests(unittest.TestCase):
         self.assertEqual(job['status'], 'done', job)
         self.assertTrue(job['result']['crystal_id'])
         self.assertEqual(len(self.library.list()), 1)
+
+    def test_github_repository_imports_once_per_commit(self):
+        from semantic_gravity_memory import github
+        from tests.test_github import archive, code
+        tarball = archive({'README.md': '# Demo\nThe secret word is PEAR-739.', 'src/app.py': code(120)})
+        with patch.object(github, 'download', return_value=tarball) as download:
+            with self.call('/api/sources/github', {'url': 'https://github.com/me/demo'}) as response:
+                self.assertEqual(response.status, 202)
+                job = self.wait_job(json.load(response))
+            self.assertEqual(job['status'], 'done', job)
+            source = job['result']
+            self.assertEqual(source['name'], 'me · demo (GitHub).md')
+            self.assertEqual((source['metadata']['origin'], source['metadata']['repo']), ('github', 'me/demo'))
+            passages = self.library.get(source['id'])['passages']
+            self.assertTrue(passages[0]['text'].startswith('# me/demo (GitHub repository)'))
+            self.assertTrue(any('File: src/app.py (lines 1–' in p['text'] for p in passages))
+            self.assertTrue(source['crystal_id'])
+            with self.call('/api/sources/github', {'url': 'github.com/me/demo.git'}) as response:
+                again = self.wait_job(json.load(response))
+            self.assertEqual(download.call_count, 2)
+        self.assertEqual((again['status'], again['result']['id'], again['result']['duplicate']), ('done', source['id'], True))
+        self.assertEqual(len(self.library.list()), 1)
+
+    def test_github_rejects_other_links_before_starting_a_job(self):
+        import urllib.error
+        with self.assertRaises(urllib.error.HTTPError) as context:
+            self.call('/api/sources/github', {'url': 'https://gitlab.com/me/demo'})
+        self.assertEqual(context.exception.code, 400)
+        context.exception.close()
+        self.assertIsNone(self.server_module._state['active_job'])
+
+    def test_chat_about_a_pinned_source_uses_its_passages_and_connections(self):
+        pinned = self.library.ingest('notes.txt', ('Unrelated opening line.\n' * 200 + 'The launch date is March 9.').encode())
+        self.library.ingest('other.txt', b'A different document about gardening.')
+        captured = []
+
+        def fake_stream(url, model, messages, thinking):
+            captured.append(messages)
+            return iter([{'message': {'content': 'Answer.'}}, {'done': True}])
+        focus = {'type': 'source', 'id': pinned['id'], 'title': 'notes.txt',
+                 'connections': [{'title': 'Launch plan', 'relation': 'source_memory', 'type': 'crystal'}]}
+        with patch.object(self.server_module, 'chat_stream', fake_stream):
+            with self.call('/api/answer', {'query': 'When is it?', 'focus': focus}) as response:
+                data = response.read().decode()
+        self.assertIn('Answer.', data)
+        system = captured[0][0]['content']
+        self.assertIn('The user is asking about this item from their memory map', system)
+        self.assertIn('Source: notes.txt', system)
+        self.assertIn('- source memory → Launch plan (memory)', system)
+        self.assertIn('[S1] notes.txt', system)  # its own passages lead the evidence
+        self.assertIn('When is it?', [m['content'] for m in captured[0] if m['role'] == 'user'][-1])
+        stored = [e.content for e in self.memory._storage.recent_events() if e.actor == 'user']
+        self.assertEqual(stored, ['When is it?'])  # the message is saved exactly as typed
+
+    def test_chat_ignores_malformed_focus(self):
+        captured = []
+
+        def fake_stream(url, model, messages, thinking):
+            captured.append(messages)
+            return iter([{'message': {'content': 'Fine.'}}, {'done': True}])
+        with patch.object(self.server_module, 'chat_stream', fake_stream):
+            for focus in ('text', {'type': 'admin', 'title': 'x'}, {'type': 'source', 'title': ''}):
+                with self.call('/api/answer', {'query': 'Hello?', 'focus': focus}) as response:
+                    response.read()
+        self.assertTrue(all('memory map ===' not in m[0]['content'] for m in captured))
 
     def test_youtube_rejects_non_video_link_before_starting_a_job(self):
         import urllib.error

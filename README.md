@@ -64,6 +64,7 @@ rebuild fails, the old index remains usable. Chat and embedding choices persist.
 | MP4, MOV, WebM, MKV | Up to 12 evenly spaced image frames with timestamps | 5 minutes; soundtrack and unsampled events are not indexed |
 | WAV, MP3, M4A, OGG, FLAC, AAC | Native audio embeddings in 30-second segments | 5 minutes; search/playback, no transcription |
 | YouTube link | The video's captions, saved as a timestamped Markdown transcript | Needs captions (human or automatic); no length limit beyond 1 million characters |
+| GitHub link | A public repository's (or folder's) docs and code, in passages labelled by file and line | About 800,000 characters of text per import; dependencies, build output, binaries, lock files, and minified code are skipped |
 
 All files are limited to **64 MB**. Byte-identical uploads are deduplicated. A
 failed import does not leave a partially indexed source. Text can be imported
@@ -92,7 +93,31 @@ again, by any link form, is recognised without fetching it twice.
 Install with `pip install -e '.[youtube]'` (the launchers do this). YouTube
 changes often, so when imports start failing, update with `pip install -U yt-dlp`.
 Indexing time grows with length: on a laptop CPU, a three-hour episode can take
-several minutes to embed, and chat waits until it finishes.
+several minutes to embed. Chat and search keep working while it does.
+
+### GitHub repositories
+
+The same link field takes a public GitHub repository, such as
+`https://github.com/owner/name`, or one of its folders
+(`https://github.com/owner/name/tree/main/src`). The archive is downloaded over
+HTTPS (git is not needed) and read in memory; nothing is extracted to disk. The
+README comes first, then docs, project files, source code, and tests, up to about
+800,000 characters. Dependencies, build output, hidden files, binaries, lock
+files, and minified code are skipped, and the source notes what was left out.
+Each passage names its file and line range, and in the source view those labels
+link to the exact lines on GitHub at the imported commit. Importing the same
+commit again is recognised; a newer commit is saved as a new snapshot. Private
+repositories are not supported. Expect roughly 1.5 seconds of embedding per
+1,000 characters on a laptop CPU, so a folder link is the quick way into a large
+project.
+
+### Asking about one item
+
+Click a node on the map to see its details. **Open** goes to where it came from
+(the video, the repository, or the original file; for a memory, the source it was
+made from), and the connection rows step to neighbouring nodes. **Send to chat**
+pins the item above the chat box: until you remove it, your questions include that
+item, its own best passages (for a source), and its connections on the map.
 
 ## Talk to your material
 
@@ -179,12 +204,13 @@ The web workspace adds a persistent source library and source-grounded chat on t
 | --- | --- |
 | `POST /api/sources?name=filename.ext` | Upload raw bytes; returns an import job |
 | `POST /api/sources/youtube` | Import a video's transcript for `{url, language?}`; returns an import job |
+| `POST /api/sources/github` | Import a public repository or folder for `{url}`; returns an import job |
 | `GET /api/jobs/{id}` | Import/reindex progress, result, or error |
 | `GET /api/sources` | Source library |
 | `GET /api/sources/{id}` | Metadata and extracted passages |
 | `GET /api/sources/{id}/file` | Original file, with byte-range support |
 | `POST /api/search` | Retrieve source excerpts and memories for `{query}` |
-| `POST /api/answer` | Grounded chat via SSE for `{query}` |
+| `POST /api/answer` | Grounded chat via SSE for `{query, focus?}`; `focus` pins a map item `{type, id, title, connections}` |
 | `GET /api/history` | Recent persistent conversation |
 | `GET /api/graph` | Actual visible nodes and relationships |
 | `GET/POST /api/config` | Settings; embedding changes return a rebuild job |

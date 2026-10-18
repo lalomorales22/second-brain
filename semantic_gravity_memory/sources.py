@@ -174,7 +174,7 @@ class SourceLibrary:
         ''')
         self.conn.commit()
 
-    def ingest(self, name, data, progress=None, metadata=None):
+    def ingest(self, name, data, progress=None, metadata=None, passages=None):
         """Store and index one original. `metadata` is merged into the source's metadata
         (it may override the default 'coverage' description).
 
@@ -182,16 +182,23 @@ class SourceLibrary:
         (extraction and embedding), without its global lock so chat and search stay
         responsive, and takes the lock only for commit(), one short transaction.
         """
-        return self.commit(self.prepare(name, data, progress, metadata))
+        return self.commit(self.prepare(name, data, progress, metadata, passages))
 
-    def prepare(self, name, data, progress=None, metadata=None):
+    def prepare(self, name, data, progress=None, metadata=None, passages=None):
         """Validate, save the original, extract, and embed, without writing to the database.
 
         Returns a PreparedSource for commit(). If identical bytes are already stored, it
         carries that source as `duplicate` and nothing is extracted or embedded. On
-        failure the saved original is removed.
+        failure the saved original is removed. For a text source, `passages` (a list of
+        strings) replaces the default chunking, e.g. code split per file with line numbers.
         """
         progress = progress or (lambda message: None)
+        if passages is not None:
+            passages = [str(p) for p in passages if str(p).strip()]
+            if not passages:
+                raise ValueError('There is no text to import.')
+            if sum(map(len, passages)) > 2 * MAX_TEXT:
+                raise ValueError('This source is too large to index. Import a smaller part of it.')
         extra_metadata = dict(metadata or {})
         embedder = self.embedder  # one embedder (and profile) for every chunk of this source
         name = Path(name.replace('\\', '/')).name[:200]
@@ -248,8 +255,11 @@ class SourceLibrary:
                                        'start_seconds': at, 'end_seconds': min(at + 30, duration)})
                     metadata['coverage'] = 'Complete recording indexed in 30-second audio segments. Semantic search and playback; no transcript.'
             else:
-                text = extract_document(path, extension)
-                chunks = [{'text': part} for part in chunk_text(text)]
+                if passages is not None:
+                    chunks = [{'text': part} for part in passages]
+                else:
+                    text = extract_document(path, extension)
+                    chunks = [{'text': part} for part in chunk_text(text)]
                 metadata['coverage'] = 'Complete extracted text, split into overlapping passages.'
             metadata.update(extra_metadata)
             if kind != 'text' and not embedder:
@@ -364,12 +374,15 @@ class SourceLibrary:
             raise ValueError('Media not found.')
         return path
 
-    def search(self, query, limit=8):
+    def search(self, query, limit=8, source_id=None):
+        """Passages for a query. With `source_id`, the best passages of that one source,
+        without the cross-source filters (used when the user asks about a specific source)."""
         query_vector = self.embedder.embed_query(query) if self.embedder else None
         terms = set(re.findall(r'\w+', query.lower())) - {'the', 'a', 'an', 'my', 'what', 'is', 'in', 'of', 'and', 'to'}
         hits = []
-        rows = self.conn.execute('''SELECT c.*, s.name, s.kind FROM source_chunks c
-            JOIN sources s ON s.id=c.source_id''').fetchall()
+        sql = '''SELECT c.*, s.name, s.kind FROM source_chunks c JOIN sources s ON s.id=c.source_id'''
+        rows = (self.conn.execute(sql + ' WHERE c.source_id=? ORDER BY c.ordinal', (source_id,)).fetchall()
+                if source_id else self.conn.execute(sql).fetchall())
         for row in rows:
             vector = json.loads(row['embedding_json'] or 'null')
             similarity = None
@@ -378,14 +391,16 @@ class SourceLibrary:
             words = set(re.findall(r'\w+', (row['name'] + ' ' + row['text']).lower()))
             lexical = len(terms & words) / max(1, len(terms))
             score = (similarity or 0) + lexical * 0.15
-            if (similarity is None or similarity < 0.22) and lexical == 0:
+            if not source_id and (similarity is None or similarity < 0.22) and lexical == 0:
                 continue
             hit = self._chunk_public(row)
             hit.update(name=row['name'], kind=row['kind'], score=round(score, 4),
                        similarity=round(similarity, 4) if similarity is not None else None,
                        url=f'/api/sources/{row["source_id"]}/file')
             hits.append(hit)
-        hits.sort(key=lambda hit: hit['score'], reverse=True)
+        hits.sort(key=lambda hit: hit['score'], reverse=True)  # stable: ties keep passage order
+        if source_id:
+            return hits[:limit]
         # EmbeddingGemma's unrelated multimodal pairs can still score around
         # 0.6. Avoid presenting every nearest neighbor as useful evidence.
         floor = 0.65 if self.embedder and 'embeddinggemma-2' in self.embedder.model else 0.25
@@ -396,10 +411,10 @@ class SourceLibrary:
         counts = {}
         result = []
         for hit in hits:
-            source_id = hit['source_id']
-            if counts.get(source_id, 0) >= 3:
+            owner = hit['source_id']
+            if counts.get(owner, 0) >= 3:
                 continue
-            counts[source_id] = counts.get(source_id, 0) + 1
+            counts[owner] = counts.get(owner, 0) + 1
             result.append(hit)
             if len(result) == limit:
                 break

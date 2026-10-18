@@ -745,6 +745,9 @@ function focus(key, move = true) {
       const other = e.a.key === key ? e.b : e.a;
       keys.add(other.key);
       connections.push({
+        key: other.key,
+        type: other.type,
+        data: other.data,
         title: other.data.name || other.data.title,
         relation: e.data.relation,
         weight: e.data.weight,

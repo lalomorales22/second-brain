@@ -2,6 +2,7 @@
 "use strict";
 const $ = (id) => document.getElementById(id);
 const state = {
+  chatFocus: null,
   sources: [],
   graph: null,
   config: {},
@@ -212,17 +213,21 @@ async function openSource(id, seconds, chunkId) {
     state.source = source;
     $("source-title").textContent = source.name;
     const fromYouTube = source.metadata.origin === "youtube";
+    const fromGitHub = source.metadata.origin === "github";
     $("source-kind").textContent = fromYouTube
       ? `YOUTUBE TRANSCRIPT · ${source.metadata.channel || bytes(source.bytes)}`
-      : `${source.kind.toUpperCase()} · ${bytes(source.bytes)}`;
+      : fromGitHub
+        ? `GITHUB REPOSITORY · ${source.metadata.repo}`
+        : `${source.kind.toUpperCase()} · ${bytes(source.bytes)}`;
     $("source-meta").textContent = source.metadata.coverage;
-    if (fromYouTube) {
+    if (fromYouTube || fromGitHub) {
+      const origin = originOf(source);
       const link = document.createElement("a");
-      link.href = source.metadata.url;
+      link.href = origin.url;
       link.target = "_blank";
       link.rel = "noopener noreferrer";
       link.className = "timecode";
-      link.textContent = "Watch on YouTube ↗";
+      link.textContent = origin.label;
       $("source-meta").append(" ", link);
     }
     $("download-source").href = source.url;
@@ -267,7 +272,9 @@ async function openSource(id, seconds, chunkId) {
         details.className = "passage";
         const body = fromYouTube
           ? linkTimecodes(escapeHTML(passage.text), source.metadata.url)
-          : escapeHTML(passage.text);
+          : fromGitHub
+            ? linkFileLines(escapeHTML(passage.text), source.metadata)
+            : escapeHTML(passage.text);
         details.innerHTML = `<summary>${source.kind === "audio" ? "Segment at " + timestamp(passage.start_seconds) : "Passage " + (i + 1)}</summary><pre>${body}</pre>`;
         details.dataset.chunkId = passage.id;
         details.open = chunkId
@@ -365,21 +372,41 @@ async function importFiles(files) {
     $("file-input").value = "";
   }
 }
-async function importYouTube(url) {
+// One link field imports YouTube transcripts and GitHub repositories.
+const YOUTUBE_HOSTS = ["youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be", "youtube-nocookie.com"];
+function linkKind(url) {
+  let text = String(url || "").trim();
+  if (/^git@github\.com:/i.test(text)) return "github";
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(text)) text = "https://" + text;
+  let host;
+  try {
+    host = new URL(text).hostname.toLowerCase().replace(/^www\./, "");
+  } catch {
+    return null;
+  }
+  if (YOUTUBE_HOSTS.includes(host)) return "youtube";
+  return host === "github.com" ? "github" : null;
+}
+async function importLink(url) {
   url = String(url || "").trim();
-  if (!url) return toast("Paste a YouTube link first.");
+  if (!url) return toast("Paste a YouTube or GitHub link first.");
+  const kind = linkKind(url);
+  if (!kind) return toast("Paste a YouTube video or a GitHub repository link.");
+  if (kind === "youtube" && !state.config.capabilities?.youtube)
+    return toast('YouTube transcripts need yt-dlp: pip install -e ".[youtube]", then restart.');
   if (state.importing) return toast("An import is already in progress.");
   state.importing = true;
   clearFinishedImports();
   showDialog("import-dialog");
-  $("btn-youtube").disabled = true;
+  $("btn-link").disabled = true;
   $("file-input").disabled = true;
+  const label = kind === "youtube" ? "YouTube" : "GitHub";
   const item = document.createElement("div");
   item.className = "import-item";
-  item.textContent = "Fetching transcript…";
+  item.textContent = kind === "youtube" ? "Fetching transcript…" : "Downloading repository…";
   $("import-progress").appendChild(item);
   try {
-    const job = await post("/api/sources/youtube", { url });
+    const job = await post(`/api/sources/${kind}`, { url });
     const result = await pollJob(job, (text) => {
       item.textContent = text;
       status(text);
@@ -389,23 +416,38 @@ async function importYouTube(url) {
       true,
       `${result.duplicate ? "Already saved" : "Saved"} · ${result.name} · ${result.chunks} searchable excerpts`,
     );
-    $("youtube-url").value = "";
+    $("link-url").value = "";
     await refresh();
   } catch (error) {
-    finishImportItem(item, false, `YouTube: ${error.message}`);
+    finishImportItem(item, false, `${label}: ${error.message}`);
   } finally {
     state.importing = false;
-    $("btn-youtube").disabled = !state.config.capabilities?.youtube;
+    $("btn-link").disabled = false;
     $("file-input").disabled = false;
   }
 }
 function applyCapabilities() {
-  const ready = Boolean(state.config.capabilities?.youtube);
-  $("youtube-url").disabled = !ready;
-  $("btn-youtube").disabled = !ready;
-  if (!ready)
-    $("youtube-hint").textContent =
-      'YouTube transcripts need yt-dlp. Install it with: pip install -e ".[youtube]", then restart.';
+  if (!state.config.capabilities?.youtube)
+    $("link-hint").textContent =
+      'GitHub repositories import as-is. YouTube transcripts need yt-dlp: pip install -e ".[youtube]", then restart.';
+}
+// Where a source really comes from: the video, the repository, or the stored original file.
+function originOf(source) {
+  const meta = source.metadata || {};
+  if (meta.origin === "youtube" && meta.url) return { url: meta.url, label: "Watch on YouTube ↗" };
+  if (meta.origin === "github" && meta.url) return { url: meta.url, label: "Open on GitHub ↗" };
+  return { url: source.url || `/api/sources/${source.id}/file`, label: "Open original ↗" };
+}
+const unescapeHTML = (html) =>
+  html.replace(/&(amp|lt|gt|quot|#39);/g, (_, e) => ({ amp: "&", lt: "<", gt: ">", quot: '"', "#39": "'" })[e]);
+// "File: path (lines 10–42)" labels in a repository source link to those lines on GitHub.
+function linkFileLines(html, meta) {
+  const at = meta.commit || meta.ref || "HEAD";
+  return html.replace(/File: (.+?) \(lines (\d+)–(\d+)\)/g, (match, path, a, b) => {
+    const file = unescapeHTML(path).split("/").map(encodeURIComponent).join("/");
+    const href = `https://github.com/${meta.repo}/blob/${encodeURIComponent(at)}/${file}#L${a}-L${b}`;
+    return `<a class="timecode" href="${escapeHTML(href)}" target="_blank" rel="noopener noreferrer">${match}</a>`;
+  });
 }
 // "[00:12:34]" markers in a YouTube transcript become links that open the video at that moment.
 function linkTimecodes(html, videoUrl) {
@@ -439,14 +481,21 @@ async function sendChat(event) {
   state.chatting = true;
   $("btn-send").disabled = true;
   $("chat-input").value = "";
-  message("user", query);
+  const focus = state.chatFocus;
+  const sent = message("user", query);
+  if (focus) {
+    const tag = document.createElement("span");
+    tag.className = "about-tag";
+    tag.textContent = `about ${short(focus.title, 36)}`;
+    sent.querySelector(".who").append(" · ", tag);
+  }
   $("chat-status").textContent = "Finding relevant memories…";
   let output;
   try {
     const response = await fetch("/api/answer", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ query }),
+      body: JSON.stringify(focus ? { query, focus } : { query }),
     });
     if (!response.ok) {
       const error = await response.json();
@@ -642,28 +691,59 @@ function hideNodeInspector() {
   panel.classList.add("hidden");
   window.dispatchEvent(new CustomEvent("brain:clear"));
 }
+const NODE_LABELS = { crystal: "MEMORY", entity: "CONCEPT", source: "SOURCE" };
+const short = (text, n = 32) => (text.length > n ? text.slice(0, n - 1) + "…" : text);
+function actionButton(className, label, onClick) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = className;
+  button.textContent = label;
+  button.addEventListener("click", onClick);
+  return button;
+}
 function inspectNode(detail) {
   const { node, connections } = detail;
   const data = node.data;
+  const title = data.name || data.title || "Untitled";
   const panel = $("node-inspector");
   panel.replaceChildren();
   panel.classList.remove("hidden");
-  panel.innerHTML = `<button class="icon-button" aria-label="Close node details">×</button><div class="eyebrow">${escapeHTML(node.type.toUpperCase())}</div><h3>${escapeHTML(data.name || data.title)}</h3><p>${escapeHTML(data.description || data.summary || `${data.mention_count} mentions in your saved memories`)}</p>`;
-  panel
-    .querySelector("button")
-    .addEventListener("click", hideNodeInspector);
-  if (node.type === "source") {
-    const button = document.createElement("button");
-    button.className = "secondary";
-    button.textContent = "Open source ↗";
-    button.style.marginTop = "12px";
-    button.addEventListener("click", () => openSource(data.id));
-    panel.appendChild(button);
+  panel.innerHTML = `<button class="icon-button" aria-label="Close node details">×</button><div class="eyebrow">${NODE_LABELS[node.type] || escapeHTML(node.type.toUpperCase())}</div><h3>${escapeHTML(title)}</h3><p>${escapeHTML(data.description || data.summary || `${data.mention_count} mentions in your saved memories`)}</p>`;
+  panel.querySelector("button").addEventListener("click", hideNodeInspector);
+  const actions = document.createElement("div");
+  actions.className = "inspector-actions";
+  // Open the real thing: a source's video, repository, or file; for a memory, its source.
+  const origins =
+    node.type === "source"
+      ? [data]
+      : connections.filter((c) => c.type === "source").map((c) => c.data);
+  for (const source of origins.slice(0, 2)) {
+    const origin = originOf(source);
+    const link = document.createElement("a");
+    link.className = "secondary";
+    link.href = origin.url;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    link.textContent =
+      node.type === "source" ? origin.label : `Source: ${short(source.name, 26)} ↗`;
+    link.title = node.type === "source" ? source.name : `${origin.label.replace(" ↗", "")}: ${source.name}`;
+    actions.appendChild(link);
   }
+  if (node.type === "source")
+    actions.appendChild(actionButton("secondary", "Passages", () => openSource(data.id)));
+  actions.appendChild(
+    actionButton("secondary send-to-chat", "Send to chat ✳", () =>
+      sendToChat(node, title, connections),
+    ),
+  );
+  panel.appendChild(actions);
   for (const connection of connections.slice(0, 8)) {
-    const row = document.createElement("div");
-    row.className = "connection-row";
+    // Each connection is a step along the map: click to inspect that node instead.
+    const row = actionButton("connection-row", "", () =>
+      window.dispatchEvent(new CustomEvent("brain:focus", { detail: connection.key })),
+    );
     row.textContent = `${connection.relation === "semantic_similarity" ? "similarity suggestion" : connection.relation.replaceAll("_", " ")} → ${connection.title}${connection.relation === "semantic_similarity" ? ` · ${connection.weight.toFixed(3)}` : ""}`;
+    row.title = "Show this on the map";
     panel.appendChild(row);
   }
   if (!connections.length) {
@@ -672,6 +752,37 @@ function inspectNode(detail) {
     row.textContent = "No stored connections yet.";
     panel.appendChild(row);
   }
+}
+// "Send to chat" pins a map item to the conversation: until removed, questions include
+// that item, its own passages (for a source), and its connections on the map.
+function sendToChat(node, title, connections) {
+  state.chatFocus = {
+    type: node.type,
+    id: node.data.id,
+    title,
+    connections: connections
+      .slice(0, 12)
+      .map((c) => ({ title: c.title, relation: c.relation, type: c.type })),
+  };
+  renderChatFocus();
+  setPanelCollapsed("right", false);
+  $("chat-input").focus();
+}
+function renderChatFocus() {
+  const chip = $("chat-focus");
+  const focus = state.chatFocus;
+  chip.classList.toggle("hidden", !focus);
+  $("chat-input").placeholder = focus
+    ? `Ask about “${short(focus.title, 40)}” or how it connects…`
+    : "Ask, explore, remember…";
+  if (!focus) return chip.replaceChildren();
+  chip.innerHTML = `<span class="chip-kind">${NODE_LABELS[focus.type]}</span><span class="chip-title"></span><button type="button" class="chip-clear" aria-label="Stop asking about this">×</button>`;
+  chip.querySelector(".chip-title").textContent = focus.title;
+  chip.title = "Your next questions include this item and its connections";
+  chip.querySelector("button").addEventListener("click", () => {
+    state.chatFocus = null;
+    renderChatFocus();
+  });
 }
 async function initWorkspace() {
   document
@@ -750,16 +861,16 @@ async function initWorkspace() {
       )
         .split(/\r?\n/)
         .find((line) => line.trim() && !line.startsWith("#"));
-      if (link && /youtu\.?be/i.test(link)) {
-        $("youtube-url").value = link.trim();
-        return importYouTube(link);
+      if (link && linkKind(link.trim())) {
+        $("link-url").value = link.trim();
+        return importLink(link);
       }
     }
     importFiles(event.dataTransfer.files);
   });
-  $("youtube-form").addEventListener("submit", (event) => {
+  $("link-form").addEventListener("submit", (event) => {
     event.preventDefault();
-    importYouTube($("youtube-url").value);
+    importLink($("link-url").value);
   });
   drop.addEventListener("keydown", (event) => {
     if (event.key === "Enter") $("file-input").click();
