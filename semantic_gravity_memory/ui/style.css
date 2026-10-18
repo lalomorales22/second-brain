@@ -525,6 +525,14 @@ kbd {
   display: inline-block;
   border-radius: 50%;
 }
+.bridge-swatch {
+  display: inline-block;
+  width: 12px;
+  height: 2px;
+  border-radius: 2px;
+  background: #e8d7a3;
+  box-shadow: 0 0 6px #e8d7a380;
+}
 .violet {
   background: var(--violet);
 }
@@ -1148,6 +1156,14 @@ button.connection-row:hover {
   line-height: 1.6;
   color: #697384;
   margin-top: 8px;
+}
+.passage .passage-image {
+  display: block;
+  max-width: 100%;
+  max-height: 260px;
+  margin: 4px 0 10px;
+  border-radius: 8px;
+  border: 1px solid #ffffff12;
 }
 .passage a.timecode {
   color: var(--accent);

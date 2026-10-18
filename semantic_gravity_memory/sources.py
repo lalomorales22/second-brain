@@ -275,6 +275,63 @@ class SourceLibrary:
                               path=path, description=description, metadata=metadata, chunks=chunks,
                               profile=embedder.profile if embedder else '')
 
+    def reserve_folder(self):
+        """A new source id and its empty asset folder, for importers that download into it."""
+        source_id = uuid.uuid4().hex
+        folder = self.asset_dir / source_id
+        folder.mkdir()
+        return source_id, folder
+
+    def prepare_collection(self, source_id, folder, name, document, chunks, kind='dataset',
+                           metadata=None, progress=None):
+        """Index a downloaded collection whose files are already in `folder` (from
+        reserve_folder): text passages plus media chunks that point at files in the folder.
+        `document` (bytes) becomes the stored original. Like prepare(), this writes nothing
+        to the database, and the folder is removed on failure. A media sample the model
+        can't embed is left out rather than failing the import."""
+        progress = progress or (lambda message: None)
+        embedder = self.embedder
+        name = Path(name.replace('\\', '/')).name[:200]
+        folder = Path(folder).resolve()
+        try:
+            if not document or len(document) > MAX_BYTES:
+                raise ValueError('The collection summary must be nonempty and smaller than 64 MB.')
+            if self.asset_dir not in folder.parents:
+                raise ValueError('Collections must live in the asset folder.')
+            digest = hashlib.sha256(document).hexdigest()
+            path = folder / ('original' + Path(name).suffix.lower())
+            path.write_bytes(document)
+            ready = []
+            for chunk in chunks:
+                chunk = dict(chunk)
+                if chunk.get('media_path'):
+                    media = Path(chunk['media_path']).resolve()
+                    if not embedder or folder not in media.parents or not media.is_file():
+                        continue
+                    chunk['media_path'] = str(media)
+                elif not str(chunk.get('text', '')).strip():
+                    continue
+                ready.append(chunk)
+            if not ready:
+                raise ValueError('There is nothing to index in this collection.')
+            indexed = []
+            for i, chunk in enumerate(ready):
+                progress(f'Indexing {name} · {i + 1}/{len(ready)}')
+                try:
+                    chunk['embedding'] = self._embed_chunk(chunk, embedder) if embedder else None
+                except RuntimeError:
+                    if chunk.get('media_path'):
+                        continue
+                    raise
+                indexed.append(chunk)
+            description = indexed[0]['text'][:500]
+        except Exception:
+            shutil.rmtree(folder, ignore_errors=True)
+            raise
+        return PreparedSource(source_id=source_id, name=name, kind=kind, digest=digest, size=len(document),
+                              path=path, description=description, metadata=dict(metadata or {}), chunks=indexed,
+                              profile=embedder.profile if embedder else '')
+
     def commit(self, prepared):
         """Write a prepared source and its passages in one short transaction.
 
@@ -327,6 +384,20 @@ class SourceLibrary:
             vector = self._embed_chunk(dict(row), embedder)
             updates.append(('source_chunks', 'embedding_json', row['id'], json.dumps(vector)))
         return updates
+
+    def texts(self, source_ids, max_chars=400_000):
+        """{source_id: its passages' text joined}, up to `max_chars` each (for word maps)."""
+        wanted = set(source_ids)
+        result = {}
+        for row in self.conn.execute('SELECT source_id, text FROM source_chunks ORDER BY source_id, ordinal'):
+            sid = row['source_id']
+            if sid in wanted and len(result.get(sid, '')) < max_chars:
+                result[sid] = result.get(sid, '') + '\n' + row['text']
+        return result
+
+    def fingerprint(self):
+        """Changes whenever a source or passage is added or removed (for caching)."""
+        return tuple(self.conn.execute('SELECT COUNT(*), COALESCE(MAX(id), 0) FROM source_chunks').fetchone())
 
     def find_by_metadata(self, key, value):
         """The source whose metadata has key == value (e.g. a YouTube video_id), or None."""

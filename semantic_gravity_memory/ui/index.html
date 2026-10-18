@@ -152,10 +152,17 @@
                   <div class="legend">
                     <span><i class="dot violet"></i>Memory</span
                     ><span><i class="dot mint"></i>Concept</span
-                    ><span><i class="dot amber"></i>Source</span>
+                    ><span><i class="dot amber"></i>Source</span
+                    ><span title="Two items that use the same distinctive words"><i class="bridge-swatch"></i>Shared words</span>
                   </div>
                   <div class="graph-controls">
                     <button
+                      id="btn-words"
+                      aria-pressed="true"
+                      title="Show topic words and the words that link items"
+                    >
+                      Aa <span>Words</span></button
+                    ><button
                       id="btn-similarity"
                       aria-pressed="false"
                       title="Show embedding similarity suggestions (not verified relationships)"
@@ -200,7 +207,8 @@
                   ><button data-filter="text">Documents</button
                   ><button data-filter="image">Images</button
                   ><button data-filter="video">Video</button
-                  ><button data-filter="audio">Audio</button>
+                  ><button data-filter="audio">Audio</button
+                  ><button data-filter="dataset">Datasets</button>
                 </div>
                 <button class="secondary add-source">＋ Add source</button>
               </div>
@@ -325,9 +333,9 @@
           inputmode="url"
           autocomplete="off"
           spellcheck="false"
-          aria-label="YouTube video or GitHub repository link"
+          aria-label="YouTube, GitHub, or Hugging Face link"
           aria-describedby="link-hint"
-          placeholder="YouTube video or GitHub repository link"
+          placeholder="YouTube video, GitHub repo, or Hugging Face dataset"
         /><button id="btn-link" class="primary" type="submit">
           Import <span>↗</span>
         </button>
@@ -336,8 +344,10 @@
         ><strong>YouTube:</strong> the video's captions as a timestamped
         transcript, great for podcasts.
         <strong>GitHub:</strong> a public repository's docs and code, labelled
-        by file and line. A folder link imports just that folder. Large
-        repositories take a while to index.</small
+        by file and line. A folder link imports just that folder.
+        <strong>Hugging Face:</strong> a dataset up to 10 GB, kept on disk,
+        with a sample of its rows, images, and audio made searchable. Large
+        downloads take a while.</small
       >
       <div class="or-divider">OR LEAVE A THOUGHT</div>
       <input

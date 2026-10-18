@@ -1,7 +1,7 @@
 """Import a public GitHub repository (or one of its folders) as one searchable source.
 
-The repository archive is downloaded over HTTPS (no git needed) and read in memory;
-nothing is extracted to disk. Documentation and source code become passages that each
+The repository archive (up to 10 GB) is streamed over HTTPS into a temporary file (no
+git needed) and read from there; no files are extracted, and the archive is deleted after. Documentation and source code become passages that each
 name their file and line range, so answers can point at the exact code. Dependencies,
 build output, binaries, lock files, and minified code are skipped, and a text budget
 keeps embedding time reasonable on a laptop CPU.
@@ -11,13 +11,17 @@ from __future__ import annotations
 import io
 import re
 import tarfile
+import tempfile
 import urllib.error
 import urllib.request
 from collections import Counter
 from dataclasses import dataclass, field
+from pathlib import Path
 from urllib.parse import quote, unquote, urlparse
 
-MAX_DOWNLOAD = 100 * 1024 * 1024  # compressed archive
+from semantic_gravity_memory import downloads
+
+MAX_DOWNLOAD = downloads.MAX_DOWNLOAD  # 10 GB, streamed to a temporary file
 MAX_FILE_BYTES = 512 * 1024
 TEXT_BUDGET = 800_000  # characters of file text indexed; roughly 300 passages
 PASSAGE_CHARS = 2400
@@ -264,27 +268,11 @@ class RepoSnapshot:
                 'files': len(self.files), 'skipped': dict(self.skipped), 'coverage': coverage}
 
 
-def download(ref, progress=None):
-    """The repository's .tar.gz archive from GitHub, size-limited."""
-    progress = progress or (lambda message: None)
+def download(ref, target, progress=None):
+    """Stream the repository's .tar.gz archive from GitHub into `target` (up to 10 GB)."""
     url = f'https://codeload.github.com/{ref.slug}/tar.gz/{quote(ref.ref or "HEAD", safe="/")}'
-    request = urllib.request.Request(url, headers={'User-Agent': 'second-brain'})
-    too_large = (f'{ref.slug} is larger than 100 MB to download. Paste a link to one of its folders '
-                 f'instead, such as https://github.com/{ref.slug}/tree/main/src')
     try:
-        with urllib.request.urlopen(request, timeout=60) as response:
-            if int(response.headers.get('Content-Length') or 0) > MAX_DOWNLOAD:
-                raise ValueError(too_large)
-            blocks, total = [], 0
-            while True:
-                block = response.read(1 << 20)
-                if not block:
-                    break
-                total += len(block)
-                if total > MAX_DOWNLOAD:
-                    raise ValueError(too_large)
-                blocks.append(block)
-                progress(f'Downloading {ref.slug} · {total / 1048576:.1f} MB')
+        return downloads.stream_to_file(url, target, progress, label=f'Downloading {ref.slug}', limit=MAX_DOWNLOAD)
     except urllib.error.HTTPError as exc:
         if exc.code == 404:
             where = f' with a branch or tag named "{ref.ref}"' if ref.ref else ''
@@ -293,15 +281,17 @@ def download(ref, progress=None):
         raise ValueError(f'GitHub returned an error ({exc.code}). Try again in a moment.') from exc
     except urllib.error.URLError as exc:
         raise ValueError(f'Could not reach GitHub: {exc.reason}') from exc
-    return b''.join(blocks)
 
 
-def read_archive(data, ref, budget=None):
-    """Pick the files to index from an archive, in memory. Returns a RepoSnapshot."""
+def read_archive(source, ref, budget=None):
+    """Pick the files to index from an archive (bytes or a path to a .tar.gz), streaming it
+    without extracting anything to disk. Returns a RepoSnapshot."""
     budget = TEXT_BUDGET if budget is None else budget
     candidates, skipped = [], Counter()
     try:
-        with tarfile.open(fileobj=io.BytesIO(data), mode='r:gz') as tar:
+        opened = (tarfile.open(fileobj=io.BytesIO(source), mode='r:gz') if isinstance(source, (bytes, bytearray))
+                  else tarfile.open(name=str(source), mode='r:gz'))
+        with opened as tar:
             commit = tar.pax_headers.get('comment', '')
             if not re.fullmatch(r'[0-9a-f]{40}', commit or ''):
                 commit = ''
@@ -353,6 +343,8 @@ def fetch_repository(url_or_ref, progress=None):
     progress = progress or (lambda message: None)
     ref = url_or_ref if isinstance(url_or_ref, RepoRef) else parse_repo(url_or_ref)
     progress(f'Downloading {ref.label} from GitHub')
-    data = download(ref, progress)
-    progress(f'Reading {ref.label}')
-    return read_archive(data, ref)
+    with tempfile.TemporaryDirectory(prefix='second-brain-') as folder:
+        archive_path = Path(folder) / 'repository.tar.gz'
+        download(ref, archive_path, progress)
+        progress(f'Reading {ref.label}')
+        return read_archive(archive_path, ref)

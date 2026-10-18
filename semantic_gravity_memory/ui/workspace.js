@@ -11,7 +11,7 @@ const state = {
   importing: false,
   source: null,
 };
-const icons = { text: "▤", image: "▧", video: "▷", audio: "♫" };
+const icons = { text: "▤", image: "▧", video: "▷", audio: "♫", dataset: "▦" };
 const escapeHTML = (value) =>
   String(value ?? "").replace(
     /[&<>"']/g,
@@ -202,7 +202,8 @@ function renderLibrary() {
       source.kind === "image"
         ? `<img src="${source.url}" alt="" loading="lazy">`
         : icons[source.kind];
-    card.innerHTML = `<div class="source-cover">${cover}</div><div class="source-card-info"><div class="eyebrow">${source.kind} · ${bytes(source.bytes)}</div><h3>${escapeHTML(source.name)}</h3><p>${source.chunks} ${source.kind === "video" ? "frames" : source.kind === "audio" ? "segments" : "passages"} · ${new Date(source.created_ts).toLocaleDateString(undefined, { month: "short", day: "numeric" })}</p></div>`;
+    // A dataset's own size (its downloaded files), not the size of its summary document.
+    card.innerHTML = `<div class="source-cover">${cover}</div><div class="source-card-info"><div class="eyebrow">${source.kind} · ${bytes(source.metadata?.bytes || source.bytes)}</div><h3>${escapeHTML(source.name)}</h3><p>${source.chunks} ${source.kind === "video" ? "frames" : source.kind === "audio" ? "segments" : "passages"} · ${new Date(source.created_ts).toLocaleDateString(undefined, { month: "short", day: "numeric" })}</p></div>`;
     card.addEventListener("click", () => openSource(source.id));
     $("source-grid").appendChild(card);
   });
@@ -214,13 +215,16 @@ async function openSource(id, seconds, chunkId) {
     $("source-title").textContent = source.name;
     const fromYouTube = source.metadata.origin === "youtube";
     const fromGitHub = source.metadata.origin === "github";
+    const fromHub = source.metadata.origin === "huggingface";
     $("source-kind").textContent = fromYouTube
       ? `YOUTUBE TRANSCRIPT · ${source.metadata.channel || bytes(source.bytes)}`
       : fromGitHub
         ? `GITHUB REPOSITORY · ${source.metadata.repo}`
-        : `${source.kind.toUpperCase()} · ${bytes(source.bytes)}`;
+        : fromHub
+          ? `HUGGING FACE DATASET · ${source.metadata.dataset}`
+          : `${source.kind.toUpperCase()} · ${bytes(source.bytes)}`;
     $("source-meta").textContent = source.metadata.coverage;
-    if (fromYouTube || fromGitHub) {
+    if (fromYouTube || fromGitHub || fromHub) {
       const origin = originOf(source);
       const link = document.createElement("a");
       link.href = origin.url;
@@ -275,17 +279,33 @@ async function openSource(id, seconds, chunkId) {
           : fromGitHub
             ? linkFileLines(escapeHTML(passage.text), source.metadata)
             : escapeHTML(passage.text);
-        details.innerHTML = `<summary>${source.kind === "audio" ? "Segment at " + timestamp(passage.start_seconds) : "Passage " + (i + 1)}</summary><pre>${body}</pre>`;
+        const label =
+          source.kind === "audio"
+            ? "Segment at " + timestamp(passage.start_seconds)
+            : passage.media_kind === "image"
+              ? `Sample image ${i + 1}`
+              : passage.media_kind === "audio"
+                ? `Sample audio ${i + 1}`
+                : "Passage " + (i + 1);
+        details.innerHTML = `<summary>${label}</summary><pre>${body}</pre>`;
         details.dataset.chunkId = passage.id;
         details.open = chunkId
           ? passage.id === chunkId
-          : i === 0 && source.kind === "text";
-        if (source.kind === "audio") {
+          : i === 0 && ["text", "dataset"].includes(source.kind);
+        // Audio segments, and a dataset's sample images and clips, preview inline.
+        if (passage.preview_url && (source.kind === "audio" || passage.media_kind === "audio")) {
           const player = document.createElement("audio");
           player.src = passage.preview_url;
           player.controls = true;
           player.preload = "none";
           details.appendChild(player);
+        } else if (passage.preview_url && passage.media_kind === "image") {
+          const image = document.createElement("img");
+          image.src = passage.preview_url;
+          image.alt = passage.text;
+          image.loading = "lazy";
+          image.className = "passage-image";
+          details.appendChild(image);
         }
         $("source-passages").appendChild(details);
       });
@@ -385,13 +405,14 @@ function linkKind(url) {
     return null;
   }
   if (YOUTUBE_HOSTS.includes(host)) return "youtube";
+  if (host === "huggingface.co" || host === "hf.co") return "huggingface";
   return host === "github.com" ? "github" : null;
 }
 async function importLink(url) {
   url = String(url || "").trim();
   if (!url) return toast("Paste a YouTube or GitHub link first.");
   const kind = linkKind(url);
-  if (!kind) return toast("Paste a YouTube video or a GitHub repository link.");
+  if (!kind) return toast("Paste a YouTube video, GitHub repository, or Hugging Face dataset link.");
   if (kind === "youtube" && !state.config.capabilities?.youtube)
     return toast('YouTube transcripts need yt-dlp: pip install -e ".[youtube]", then restart.');
   if (state.importing) return toast("An import is already in progress.");
@@ -400,10 +421,14 @@ async function importLink(url) {
   showDialog("import-dialog");
   $("btn-link").disabled = true;
   $("file-input").disabled = true;
-  const label = kind === "youtube" ? "YouTube" : "GitHub";
+  const label = { youtube: "YouTube", github: "GitHub", huggingface: "Hugging Face" }[kind];
   const item = document.createElement("div");
   item.className = "import-item";
-  item.textContent = kind === "youtube" ? "Fetching transcript…" : "Downloading repository…";
+  item.textContent = {
+    youtube: "Fetching transcript…",
+    github: "Downloading repository…",
+    huggingface: "Reading dataset…",
+  }[kind];
   $("import-progress").appendChild(item);
   try {
     const job = await post(`/api/sources/${kind}`, { url });
@@ -436,6 +461,7 @@ function originOf(source) {
   const meta = source.metadata || {};
   if (meta.origin === "youtube" && meta.url) return { url: meta.url, label: "Watch on YouTube ↗" };
   if (meta.origin === "github" && meta.url) return { url: meta.url, label: "Open on GitHub ↗" };
+  if (meta.origin === "huggingface" && meta.url) return { url: meta.url, label: "Open on Hugging Face ↗" };
   return { url: source.url || `/api/sources/${source.id}/file`, label: "Open original ↗" };
 }
 const unescapeHTML = (html) =>
@@ -742,7 +768,10 @@ function inspectNode(detail) {
     const row = actionButton("connection-row", "", () =>
       window.dispatchEvent(new CustomEvent("brain:focus", { detail: connection.key })),
     );
-    row.textContent = `${connection.relation === "semantic_similarity" ? "similarity suggestion" : connection.relation.replaceAll("_", " ")} → ${connection.title}${connection.relation === "semantic_similarity" ? ` · ${connection.weight.toFixed(3)}` : ""}`;
+    row.textContent =
+      connection.relation === "shared_words"
+        ? `shares ${connection.words.map((w) => `“${w}”`).join(", ")} → ${connection.title}`
+        : `${connection.relation === "semantic_similarity" ? "similarity suggestion" : connection.relation.replaceAll("_", " ")} → ${connection.title}${connection.relation === "semantic_similarity" ? ` · ${connection.weight.toFixed(3)}` : ""}`;
     row.title = "Show this on the map";
     panel.appendChild(row);
   }
@@ -762,7 +791,11 @@ function sendToChat(node, title, connections) {
     title,
     connections: connections
       .slice(0, 12)
-      .map((c) => ({ title: c.title, relation: c.relation, type: c.type })),
+      .map((c) => ({
+        title: c.title,
+        relation: c.words ? `shares the words ${c.words.join(", ")} with` : c.relation,
+        type: c.type,
+      })),
   };
   renderChatFocus();
   setPanelCollapsed("right", false);

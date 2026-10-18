@@ -71,6 +71,38 @@ class SourceTests(unittest.TestCase):
         self.assertEqual({hit['source_id'] for hit in hits}, {first['id']})
         self.assertIn('PEAR-739', hits[0]['text'])
 
+    def test_collection_keeps_its_media_inside_its_own_folder(self):
+        source_id, folder = self.library.reserve_folder()
+        inside = folder / 'a.jpg'
+        inside.write_bytes(b'\xff\xd8 image')
+        outside = Path(self.temp.name) / 'elsewhere.jpg'
+        outside.write_bytes(b'\xff\xd8 image')
+        prepared = self.library.prepare_collection(source_id, folder, 'set.md', b'# Set', [
+            {'text': 'Overview of the set.'},
+            {'text': 'Image a', 'media_path': str(inside), 'media_kind': 'image'},
+            {'text': 'Image outside', 'media_path': str(outside), 'media_kind': 'image'},
+        ])
+        source = self.library.commit(prepared)
+        passages = self.library.get(source['id'])['passages']
+        self.assertEqual([p['text'] for p in passages], ['Overview of the set.', 'Image a'])
+        self.assertEqual(source['kind'], 'dataset')
+
+    def test_collection_skips_media_the_model_cannot_embed(self):
+        source_id, folder = self.library.reserve_folder()
+        (folder / 'bad.jpg').write_bytes(b'not an image')
+        with patch.object(self.library.embedder, 'embed_media', side_effect=RuntimeError('unsupported image')):
+            prepared = self.library.prepare_collection(source_id, folder, 'set.md', b'# Set', [
+                {'text': 'Overview.'}, {'text': 'Bad', 'media_path': str(folder / 'bad.jpg'), 'media_kind': 'image'}])
+        self.assertEqual([c['text'] for c in prepared.chunks], ['Overview.'])
+
+    def test_failed_collection_removes_its_folder(self):
+        source_id, folder = self.library.reserve_folder()
+        (folder / 'downloaded.bin').write_bytes(b'x' * 10)
+        with patch.object(self.library.embedder, 'embed_document', side_effect=RuntimeError('offline')):
+            with self.assertRaisesRegex(RuntimeError, 'offline'):
+                self.library.prepare_collection(source_id, folder, 'set.md', b'# Set', [{'text': 'Overview.'}])
+        self.assertFalse(folder.exists())
+
     def test_prebuilt_passages_replace_default_chunking(self):
         source = self.library.ingest('repo.md', b'# Whole document', passages=['File: a.py (lines 1-2)\nx', 'File: b.py (lines 1-1)\ny'])
         self.assertEqual([p['text'] for p in self.library.get(source['id'])['passages']],
@@ -369,7 +401,7 @@ class APITests(unittest.TestCase):
         from semantic_gravity_memory import github
         from tests.test_github import archive, code
         tarball = archive({'README.md': '# Demo\nThe secret word is PEAR-739.', 'src/app.py': code(120)})
-        with patch.object(github, 'download', return_value=tarball) as download:
+        with patch.object(github, 'download', side_effect=lambda ref, target, progress=None: Path(target).write_bytes(tarball)) as download:
             with self.call('/api/sources/github', {'url': 'https://github.com/me/demo'}) as response:
                 self.assertEqual(response.status, 202)
                 job = self.wait_job(json.load(response))
@@ -386,6 +418,78 @@ class APITests(unittest.TestCase):
             self.assertEqual(download.call_count, 2)
         self.assertEqual((again['status'], again['result']['id'], again['result']['duplicate']), ('done', source['id'], True))
         self.assertEqual(len(self.library.list()), 1)
+
+    def dataset_snapshot(self, folder, sha='a' * 40):
+        from semantic_gravity_memory import huggingface
+        files_dir = Path(folder) / 'files'
+        files_dir.mkdir(parents=True, exist_ok=True)
+        (files_dir / 'train.csv').write_text('text,label\nloved it,pos\n')
+        (Path(folder) / 'samples').mkdir(exist_ok=True)
+        image = Path(folder) / 'samples' / 'poster.jpg'
+        image.write_bytes(b'\xff\xd8\xff\xe0' + b'\x00' * 40)
+        snapshot = huggingface.DatasetSnapshot(huggingface.DatasetRef('me/reviews'), sha, {'cardData': {'license': 'mit'}},
+                                               [('train.csv', 26)], card='# Reviews\nShort reviews.')
+        snapshot.row_lines = [('Rows from me/reviews · default/train', 'Row 0 · text: loved it · label: pos')]
+        snapshot.media = [{'text': 'Image from me/reviews row 0.', 'media_path': str(image), 'media_kind': 'image'}]
+        return snapshot
+
+    def test_huggingface_dataset_imports_once_per_revision(self):
+        from semantic_gravity_memory import huggingface
+        self.library.embedder = FakeEmbedder()
+        builds = []
+
+        def fake_build(ref, info, folder, progress=None, budget=None):
+            builds.append(Path(folder))
+            return self.dataset_snapshot(folder)
+        with patch.object(huggingface, 'fetch_info', return_value={'sha': 'a' * 40}), \
+                patch.object(huggingface, 'build', fake_build):
+            with self.call('/api/sources/huggingface', {'url': 'https://huggingface.co/datasets/me/reviews'}) as response:
+                self.assertEqual(response.status, 202)
+                job = self.wait_job(json.load(response))
+            self.assertEqual(job['status'], 'done', job)
+            source = job['result']
+            self.assertEqual((source['kind'], source['name']), ('dataset', 'me · reviews (Hugging Face).md'))
+            self.assertEqual(source['metadata']['origin'], 'huggingface')
+            passages = self.library.get(source['id'])['passages']
+            self.assertTrue(passages[0]['text'].startswith('# me/reviews (Hugging Face dataset)'))
+            self.assertEqual([p['media_kind'] for p in passages if p['media_kind']], ['image'])
+            self.assertTrue((builds[0] / 'files' / 'train.csv').exists())  # the download stays with the source
+            with self.call('/api/sources/huggingface', {'url': 'hf.co/datasets/me/reviews'}) as response:
+                again = self.wait_job(json.load(response))
+        self.assertEqual(len(builds), 1)  # recognised by revision before downloading again
+        self.assertEqual((again['result']['id'], again['result']['duplicate']), (source['id'], True))
+
+    def test_failed_dataset_download_leaves_nothing_behind(self):
+        from semantic_gravity_memory import huggingface
+        with patch.object(huggingface, 'fetch_info', return_value={'sha': 'b' * 40}), \
+                patch.object(huggingface, 'build', side_effect=ValueError('Not enough disk space: this needs 9.0 GB')):
+            with self.call('/api/sources/huggingface', {'url': 'https://huggingface.co/datasets/me/big'}) as response:
+                job = self.wait_job(json.load(response))
+        self.assertEqual((job['status'], job['error']), ('error', 'Not enough disk space: this needs 9.0 GB'))
+        self.assertEqual(list(self.library.asset_dir.iterdir()), [])
+        self.assertEqual(self.library.list(), [])
+
+    def test_huggingface_rejects_models_before_starting_a_job(self):
+        import urllib.error
+        with self.assertRaises(urllib.error.HTTPError) as context:
+            self.call('/api/sources/huggingface', {'url': 'https://huggingface.co/openai/gpt-oss-20b'})
+        self.assertEqual(context.exception.code, 400)
+        self.assertIn('Only datasets', json.load(context.exception)['error'])
+        context.exception.close()
+
+    def test_graph_names_topic_words_and_bridges(self):
+        talk = ('Grusch told Congress the Pentagon hid UAP craft recovered by Lockheed. ' * 12)
+        self.library.ingest('first.txt', (talk + 'Some extra notes about hearings.').encode())
+        self.library.ingest('second.txt', (talk + 'A different closing about budgets.').encode())
+        self.library.ingest('third.txt', ('LoRA adapters fine-tune transformer weights quickly. ' * 12).encode())
+        with self.call('/api/graph') as response:
+            graph = json.load(response)
+        keys = {f'source_{s["id"]}': s['name'] for s in graph['sources']}
+        self.assertTrue(graph['words'])
+        self.assertTrue(all(key in keys for key in graph['words']))
+        pairs = {frozenset((keys[b['a']], keys[b['b']])) for b in graph['bridges']}
+        self.assertIn(frozenset(('first.txt', 'second.txt')), pairs)
+        self.assertNotIn('third.txt', {name for pair in pairs for name in pair})
 
     def test_github_rejects_other_links_before_starting_a_job(self):
         import urllib.error

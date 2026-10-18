@@ -23,7 +23,9 @@ const edgeColors = {
   semantic_similarity: 0xc4d992,
   contradicts: 0xdd687a,
   temporal_cluster: 0x8172a8,
+  shared_words: 0xe8d7a3,
 };
+const WORD_ANGLES = [25, 155, 80, 335, 205].map((d) => (d * Math.PI) / 180); // around a node, below left free for its name
 const SEGMENTS = 24; // line pieces per curved strand
 const HALO = { crystal: 5.2, entity: 4.4, source: 4.8 }; // halo diameter, in orb radii
 
@@ -44,6 +46,9 @@ let step = 0,
   selectedKey = null,
   firstGraph = true,
   edgesDirty = true;
+let words = [], // floating word labels: {sprite, node?, edge?, slot, px}
+  showWords = true,
+  activeKeys = new Set();
 let halo = null,
   strands = null,
   sparks = null;
@@ -253,6 +258,32 @@ function initialPosition(key) {
     Math.sqrt(1 - z * z) * Math.sin(angle),
   ).multiplyScalar(radius);
 }
+// A compact text sprite sized to its word. `px` is its on-screen height.
+function wordSprite(text, px, color = "#d3d9e5") {
+  const font = '500 28px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+  const canvas = document.createElement("canvas");
+  const ctx = canvas.getContext("2d");
+  ctx.font = font;
+  canvas.width = Math.ceil(ctx.measureText(text).width) + 20;
+  canvas.height = 44;
+  ctx.font = font;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.shadowColor = "rgba(5, 7, 11, 0.95)";
+  ctx.shadowBlur = 7;
+  ctx.fillStyle = color;
+  ctx.fillText(text, canvas.width / 2, canvas.height / 2);
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  const sprite = new THREE.Sprite(
+    new THREE.SpriteMaterial({ map: texture, transparent: true, opacity: 0.8, depthTest: false }),
+  );
+  sprite.renderOrder = 11;
+  sprite.userData.aspect = canvas.width / canvas.height;
+  sprite.userData.px = px;
+  return sprite;
+}
+const cleanWord = (text) => String(text).replace(/\s+/g, " ").trim().slice(0, 28);
 function label(text) {
   const canvas = document.createElement("canvas");
   canvas.width = 640;
@@ -475,12 +506,14 @@ function makeEdgeLayers() {
     from.set(colors[e.a.type]);
     to.set(colors[e.b.type]);
     tint.set(edgeColors[e.data.relation] || 0x536782);
-    const tintAmount = e.data.relation === "contradicts" ? 0.8 : 0.45;
+    const tintAmount = e.data.relation === "contradicts" ? 0.8 : e.bridge ? 0.7 : 0.45;
     let v = e.vStart;
     for (let s = 0; s < e.strandCount; s++) {
       const opacity = e.similarity
         ? 0.42
-        : (0.14 + 0.2 * Math.max(0.1, e.data.weight)) * (s === 0 ? 1 : 0.6);
+        : e.bridge
+          ? 0.3 + 0.3 * e.data.weight
+          : (0.14 + 0.2 * Math.max(0.1, e.data.weight)) * (s === 0 ? 1 : 0.6);
       for (let k = 0; k < SEGMENTS; k++)
         for (const t of [k / SEGMENTS, (k + 1) / SEGMENTS]) {
           tAlong[v] = t;
@@ -551,6 +584,7 @@ function writeEdges() {
         .copy(_mid)
         .addScaledVector(_u, Math.cos(angle) * bend)
         .addScaledVector(_v, Math.sin(angle) * bend);
+      if (s === 0) e.control = (e.control || new THREE.Vector3()).copy(_control);
       if (s === 0 && e.spark >= 0) {
         a.toArray(start, e.spark * 3);
         b.toArray(end, e.spark * 3);
@@ -584,6 +618,7 @@ function build(data) {
   nodes = new Map();
   edges = [];
   halo = strands = sparks = null;
+  words = [];
   const records = [
     ...(data.crystals || []).map((d) => ({ type: "crystal", data: d })),
     ...(data.entities || []).map((d) => ({ type: "entity", data: d })),
@@ -636,6 +671,54 @@ function build(data) {
       phase: random(),
     });
   }
+  // Bridges: two items that talk about the same things, labelled with the words they share.
+  const bridgeList = showWords ? data.bridges || [] : [];
+  const strongest = Math.max(1e-6, ...bridgeList.map((bridge) => bridge.score));
+  for (const bridge of bridgeList) {
+    const a = nodes.get(bridge.a),
+      b = nodes.get(bridge.b);
+    if (!a || !b || a === b) continue;
+    const id = `${a.key}:${b.key}:shared_words`;
+    const random = seeded(id);
+    const edge = {
+      id,
+      a,
+      b,
+      bridge: true,
+      data: { relation: "shared_words", weight: bridge.score / strongest, words: bridge.words },
+      similarity: false,
+      strandCount: 1,
+      angle: random() * Math.PI * 2,
+      bend: 0.16 + random() * 0.08,
+      phase: random(),
+    };
+    edges.push(edge);
+    bridge.words.forEach((word, slot) => {
+      const sprite = wordSprite(cleanWord(word), 10, "#eadcb0");
+      graph.add(sprite);
+      words.push({ sprite, edge, slot, count: bridge.words.length });
+    });
+  }
+  // Words around each main node: what it is about, most distinctive first.
+  for (const node of nodes.values()) {
+    const list = node.type === "entity" ? [] : (data.words?.[node.key] || []).slice(0, WORD_ANGLES.length);
+    list.forEach(([word, weight], slot) => {
+      const sprite = wordSprite(cleanWord(word), 9 + 4 * weight);
+      graph.add(sprite);
+      words.push({ sprite, node, slot });
+    });
+  }
+  // The most-mentioned concepts carry their names.
+  const concepts = [...nodes.values()]
+    .filter((n) => n.type === "entity" && (n.data.mention_count || 0) >= 2)
+    .sort((x, y) => (y.data.mention_count || 0) - (x.data.mention_count || 0))
+    .slice(0, 12);
+  for (const node of concepts) {
+    const sprite = wordSprite(cleanWord(node.data.name), 9 + Math.min(4, node.data.mention_count), "#9fe0cd");
+    graph.add(sprite);
+    words.push({ sprite, node, slot: -1 });
+  }
+  for (const word of words) word.sprite.visible = showWords;
   makeEdgeLayers();
   step = 0;
   if (firstGraph && nodes.size) {
@@ -682,10 +765,11 @@ function layout() {
   for (const e of edges) {
     const delta = e.b.pos.clone().sub(e.a.pos);
     const length = delta.length();
-    const rest = e.data.relation === "source_memory" ? 4 : 7;
+    // Bridges pull gently, so items about the same things drift together.
+    const rest = e.data.relation === "source_memory" ? 4 : e.bridge ? 11 : 7;
     delta
       .normalize()
-      .multiplyScalar((length - rest) * 0.007 * Math.max(0.1, e.data.weight));
+      .multiplyScalar((length - rest) * 0.007 * Math.max(0.1, e.data.weight) * (e.bridge ? 0.3 : 1));
     e.a.vel.add(delta);
     e.b.vel.sub(delta);
   }
@@ -704,6 +788,7 @@ function layout() {
   if (step > 80 && energy / list.length < 0.002) step = 281;
 }
 function illuminate(keys) {
+  activeKeys = keys;
   const any = keys.size > 0;
   const glow = halo?.geometry.attributes.aGlow;
   for (const n of nodes.values()) {
@@ -751,6 +836,7 @@ function focus(key, move = true) {
         title: other.data.name || other.data.title,
         relation: e.data.relation,
         weight: e.data.weight,
+        words: e.data.words,
       });
     }
   }
@@ -815,6 +901,7 @@ function animateNodes(dt) {
       node.core.rotation.y -= 0.8 * spin;
       node.core.rotation.x += 0.3 * spin;
     }
+    node.worldRadius = size;
     node.boost += ((hover === node ? 1.35 : 1) - node.boost) * Math.min(1, dt * 10);
     node.mesh.material.uniforms.uIntensity.value = node.level * node.boost;
     if (haloPosition) {
@@ -834,6 +921,72 @@ function animateNodes(dt) {
   if (haloPosition) {
     haloPosition.needsUpdate = true;
     haloSize.needsUpdate = true;
+  }
+}
+
+const _right = new THREE.Vector3(),
+  _up = new THREE.Vector3(),
+  _at = new THREE.Vector3();
+// Words face the screen: a node's topic words sit in a loose ring around it (the top two
+// always, the rest when the node is hovered or in focus), concept names sit under their
+// node, and a bridge's shared words ride along its curve (the top one always, all of
+// them when either end is hovered or in focus).
+function animateWords() {
+  if (!words.length) return;
+  _right.setFromMatrixColumn(camera.matrixWorld, 0);
+  _up.setFromMatrixColumn(camera.matrixWorld, 1);
+  const perPixelAtOne =
+    (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2))) / viewport.clientHeight;
+  const wide = viewport.clientWidth > 520;
+  const any = activeKeys.size > 0;
+  const sway = Math.sin(time.value * 0.35) * 0.12;
+  for (const word of words) {
+    const { sprite, node, edge, slot } = word;
+    let visible = showWords,
+      opacity;
+    if (node) {
+      if (!node.worldRadius) continue;
+      const pointed = hover === node || selectedKey === node.key;
+      const lit = !any || activeKeys.has(node.key);
+      visible = visible && (wide || pointed) && (slot < 2 || pointed || (any && lit));
+      opacity = !lit ? 0.07 : pointed || any ? 1 : slot < 0 ? 0.8 : 0.68;
+      const perPixel = camera.position.distanceTo(node.pos) * perPixelAtOne;
+      if (slot < 0) {
+        _at.copy(node.pos).addScaledVector(_up, -(node.worldRadius + 13 * perPixel));
+      } else {
+        const angle = WORD_ANGLES[slot] + sway;
+        const reach = node.worldRadius + (slot < 3 ? 24 : 38) * perPixel;
+        _at
+          .copy(node.pos)
+          .addScaledVector(_right, Math.cos(angle) * reach * 1.3)
+          .addScaledVector(_up, Math.sin(angle) * reach);
+      }
+      sprite.position.copy(_at);
+      sprite.scale.set(sprite.userData.px * sprite.userData.aspect * perPixel, sprite.userData.px * perPixel, 1);
+    } else if (edge?.control) {
+      const lit = !any || (activeKeys.has(edge.a.key) && activeKeys.has(edge.b.key));
+      const pointed = hover === edge.a || hover === edge.b || (any && lit);
+      visible = visible && wide && (slot === 0 || pointed);
+      opacity = !lit ? 0.05 : any ? 1 : 0.72;
+      const t = word.count === 1 ? 0.5 : 0.3 + (0.4 * slot) / (word.count - 1);
+      const q = 1 - t,
+        a = edge.a.pos,
+        b = edge.b.pos,
+        c = edge.control;
+      _at.set(
+        q * q * a.x + 2 * q * t * c.x + t * t * b.x,
+        q * q * a.y + 2 * q * t * c.y + t * t * b.y,
+        q * q * a.z + 2 * q * t * c.z + t * t * b.z,
+      );
+      const perPixel = camera.position.distanceTo(_at) * perPixelAtOne;
+      _at.addScaledVector(_up, 9 * perPixel);
+      sprite.position.copy(_at);
+      sprite.scale.set(sprite.userData.px * sprite.userData.aspect * perPixel, sprite.userData.px * perPixel, 1);
+    } else {
+      visible = false;
+    }
+    sprite.visible = visible;
+    if (opacity !== undefined) sprite.material.opacity = opacity;
   }
 }
 
@@ -919,6 +1072,11 @@ function init() {
       document.getElementById("tooltip").classList.add("hidden");
     });
     document.getElementById("btn-fit").addEventListener("click", fit);
+    document.getElementById("btn-words").addEventListener("click", () => {
+      showWords = !showWords;
+      document.getElementById("btn-words").setAttribute("aria-pressed", String(showWords));
+      if (graphData) build(graphData); // bridges come and go with the words
+    });
     document.getElementById("btn-similarity").addEventListener("click", () => {
       showSimilarity = !showSimilarity;
       document
@@ -962,6 +1120,7 @@ function init() {
       }
       controls.update();
       animateNodes(dt);
+      animateWords();
       composer.render();
     }
     animate();

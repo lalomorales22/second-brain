@@ -64,7 +64,8 @@ rebuild fails, the old index remains usable. Chat and embedding choices persist.
 | MP4, MOV, WebM, MKV | Up to 12 evenly spaced image frames with timestamps | 5 minutes; soundtrack and unsampled events are not indexed |
 | WAV, MP3, M4A, OGG, FLAC, AAC | Native audio embeddings in 30-second segments | 5 minutes; search/playback, no transcription |
 | YouTube link | The video's captions, saved as a timestamped Markdown transcript | Needs captions (human or automatic); no length limit beyond 1 million characters |
-| GitHub link | A public repository's (or folder's) docs and code, in passages labelled by file and line | About 800,000 characters of text per import; dependencies, build output, binaries, lock files, and minified code are skipped |
+| GitHub link | A public repository's (or folder's) docs and code, in passages labelled by file and line | Up to 10 GB download; about 800,000 characters of text indexed; dependencies, build output, binaries, lock files, SVGs, and minified code are skipped |
+| Hugging Face dataset link | Every file kept; overview, card, sample rows, images, and audio indexed | Up to 10 GB; a sample is searchable, the rest is stored |
 
 All files are limited to **64 MB**. Byte-identical uploads are deduplicated. A
 failed import does not leave a partially indexed source. Text can be imported
@@ -99,8 +100,9 @@ several minutes to embed. Chat and search keep working while it does.
 
 The same link field takes a public GitHub repository, such as
 `https://github.com/owner/name`, or one of its folders
-(`https://github.com/owner/name/tree/main/src`). The archive is downloaded over
-HTTPS (git is not needed) and read in memory; nothing is extracted to disk. The
+(`https://github.com/owner/name/tree/main/src`). The archive, up to 10 GB, is
+streamed over HTTPS into a temporary file (git is not needed) and read from there;
+no files are extracted, and the archive is deleted afterwards. The
 README comes first, then docs, project files, source code, and tests, up to about
 800,000 characters. Dependencies, build output, hidden files, binaries, lock
 files, and minified code are skipped, and the source notes what was left out.
@@ -109,7 +111,24 @@ link to the exact lines on GitHub at the imported commit. Importing the same
 commit again is recognised; a newer commit is saved as a new snapshot. Private
 repositories are not supported. Expect roughly 1.5 seconds of embedding per
 1,000 characters on a laptop CPU, so a folder link is the quick way into a large
-project.
+project. Downloads of several gigabytes take a while; progress shows in the import list.
+
+### Hugging Face datasets
+
+Paste a dataset link, such as `https://huggingface.co/datasets/owner/name` (or a
+folder link, `…/tree/main/data`). Datasets up to 10 GB are accepted; every file is
+downloaded and kept with the source, after a free-space check. Search indexes a
+representative sample, because embedding gigabytes on a laptop CPU isn't practical:
+an overview (license, tasks, splits, columns, file list), the dataset card, up to
+200 rows from each of the first six splits (about 300,000 characters, with class
+labels shown by name), up to 24 sample images, and up to 12 audio clips (their first
+30 seconds). Rows come from Hugging Face's dataset viewer, so Parquet works without
+extra libraries; when the viewer has nothing, CSV, TSV, JSON Lines, JSON, and text
+files are sampled from the download. In the library these appear under **Datasets**,
+and the source view shows the sample images and plays the clips. For gated or private
+datasets, accept the terms on huggingface.co and start the app with an `HF_TOKEN`
+environment variable holding your access token. The downloaded files live in the
+source's folder under `.data/memory-assets/`.
 
 ### Asking about one item
 
@@ -136,12 +155,22 @@ per database, not a multi-user or multi-conversation system.
 
 ## A graph grounded in your data
 
-- **Purple spheres:** structured memories. Size reflects stored importance; rings
-  indicate semantic memories.
-- **Mint polyhedra:** concepts extracted from text. Their size reflects mentions.
-- **Amber diamonds:** original source files, linked to their corresponding memory.
-- **Solid lines:** stored source links, mentions, co-occurrences, temporal links,
+- **Violet orbs:** structured memories. Size reflects stored importance; an
+  orbiting ring marks semantic memories.
+- **Mint orbs:** concepts extracted from text. Their size reflects mentions, and the
+  most-mentioned ones carry their names.
+- **Amber glass orbs with a diamond core:** original sources, linked to their memory.
+- **Curved strands:** stored source links, mentions, co-occurrences, temporal links,
   or contradictions. Click a node to inspect the relationship names.
+- **Words:** each source, and each memory that isn't a source's own summary, shows
+  its most distinctive words (frequent in it, rare elsewhere; names and acronyms
+  weigh more, filler and code keywords are ignored). The top two float beside it,
+  and the rest appear when you hover it or bring it into focus.
+- **Golden bridges:** two items that use the same distinctive words, with those
+  words along the link (the top one always, all of them in focus). The node panel
+  lists them, for example "shares “congress”, “uap”, “cia” → …", and **Send to
+  chat** passes them to the model. Bridges are word overlap, not verified facts.
+  **Words** turns the word layer and bridges on or off.
 - **Optional dashed lines:** model-derived similarity suggestions with cosine
   scores. Turn on **Similar** to see them. These are not verified factual links.
 
@@ -205,6 +234,7 @@ The web workspace adds a persistent source library and source-grounded chat on t
 | `POST /api/sources?name=filename.ext` | Upload raw bytes; returns an import job |
 | `POST /api/sources/youtube` | Import a video's transcript for `{url, language?}`; returns an import job |
 | `POST /api/sources/github` | Import a public repository or folder for `{url}`; returns an import job |
+| `POST /api/sources/huggingface` | Import a dataset or folder for `{url}`; returns an import job |
 | `GET /api/jobs/{id}` | Import/reindex progress, result, or error |
 | `GET /api/sources` | Source library |
 | `GET /api/sources/{id}` | Metadata and extracted passages |

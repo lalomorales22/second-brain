@@ -1,11 +1,14 @@
 """GitHub repository import: link parsing, file selection, passages, and download errors (no network)."""
 import io
 import tarfile
+import tempfile
 import unittest
 import urllib.error
 from unittest.mock import patch
 
-from semantic_gravity_memory import github
+from pathlib import Path
+
+from semantic_gravity_memory import downloads, github
 from semantic_gravity_memory.github import RepoRef, parse_repo, read_archive
 
 COMMIT = 'c080742af4b8fac3e073ba210bd644dade1c1ca5'
@@ -166,15 +169,23 @@ class FakeResponse(io.BytesIO):
 
 
 class DownloadTests(unittest.TestCase):
-    def test_downloads_the_default_branch_archive(self):
+    def setUp(self):
+        self.folder = tempfile.TemporaryDirectory()
+        self.target = Path(self.folder.name) / 'repo.tar.gz'
+
+    def tearDown(self):
+        self.folder.cleanup()
+
+    def test_streams_the_archive_to_disk(self):
         seen = []
 
         def fake(request, timeout):
             seen.append(request.full_url)
             return FakeResponse(b'tarball')
         with patch.object(github.urllib.request, 'urlopen', fake):
-            self.assertEqual(github.download(RepoRef('me', 'demo')), b'tarball')
-            github.download(RepoRef('me', 'demo', 'feature/x'))
+            self.assertEqual(github.download(RepoRef('me', 'demo'), self.target), 7)
+            self.assertEqual(self.target.read_bytes(), b'tarball')
+            github.download(RepoRef('me', 'demo', 'feature/x'), self.target)
         self.assertEqual(seen, ['https://codeload.github.com/me/demo/tar.gz/HEAD',
                                 'https://codeload.github.com/me/demo/tar.gz/feature/x'])
 
@@ -182,13 +193,30 @@ class DownloadTests(unittest.TestCase):
         error = urllib.error.HTTPError('u', 404, 'Not Found', {}, None)
         with patch.object(github.urllib.request, 'urlopen', side_effect=error):
             with self.assertRaisesRegex(ValueError, 'no public repository me/demo.*Private'):
-                github.download(RepoRef('me', 'demo'))
+                github.download(RepoRef('me', 'demo'), self.target)
 
-    def test_too_large_suggests_a_folder_link(self):
+    def test_over_10_gb_stops_and_leaves_no_partial_file(self):
         with patch.object(github.urllib.request, 'urlopen',
                           return_value=FakeResponse(b'', length=github.MAX_DOWNLOAD + 1)):
-            with self.assertRaisesRegex(ValueError, 'larger than 100 MB.*tree/main/src'):
-                github.download(RepoRef('me', 'demo'))
+            with self.assertRaisesRegex(ValueError, r'over the 10\.0 GB limit'):
+                github.download(RepoRef('me', 'demo'), self.target)
+        self.assertFalse(self.target.exists())
+
+    def test_not_enough_disk_space(self):
+        with patch.object(github.urllib.request, 'urlopen', return_value=FakeResponse(b'x' * 100)),                 patch.object(downloads, 'free_space', return_value=downloads.SPARE_DISK + 10):
+            with self.assertRaisesRegex(ValueError, 'Not enough disk space'):
+                github.download(RepoRef('me', 'demo'), self.target)
+        self.assertFalse(self.target.exists())
+
+    def test_fetch_reads_the_downloaded_archive(self):
+        data = archive({'README.md': '# Demo', 'src/a.py': 'a = 1'})
+        with patch.object(github.urllib.request, 'urlopen', return_value=FakeResponse(data)):
+            snapshot = github.fetch_repository('https://github.com/me/demo')
+        self.assertEqual([f.path for f in snapshot.files], ['README.md', 'src/a.py'])
+
+    def test_sizes_read_naturally(self):
+        self.assertEqual([downloads.human(n) for n in (512, 1536, 5 * 1024 ** 2, 10 * 1024 ** 3)],
+                         ['512 bytes', '1.5 KB', '5.0 MB', '10.0 GB'])
 
 
 if __name__ == '__main__':

@@ -6,6 +6,7 @@ import mimetypes
 import os
 from pathlib import Path
 import re
+import shutil
 import threading
 import urllib.error
 import urllib.request
@@ -13,7 +14,7 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
-from semantic_gravity_memory import Memory, github, youtube
+from semantic_gravity_memory import Memory, github, huggingface, keywords, youtube
 from semantic_gravity_memory.models import Event
 from semantic_gravity_memory.sources import SourceLibrary, capabilities, MAX_BYTES
 from semantic_gravity_memory.embeddings.indexing import install_embedder
@@ -368,6 +369,30 @@ class BrainHandler(BaseHTTPRequestHandler):
                 with _state['lock']:
                     return self._link_memory(self.library.commit(prepared))
             return self._json(start_job('Importing ' + repo.label, import_repository, locked=False), 202)
+        if path == '/api/sources/huggingface':
+            dataset = huggingface.parse_dataset(str(body.get('url', '')).strip())  # rejects other links up front
+            def import_dataset(progress):
+                progress(f'Reading {dataset.label} on Hugging Face')
+                info = huggingface.fetch_info(dataset)
+                key = f'{dataset.repo_id}:{dataset.path}@{info["sha"]}'
+                with _state['lock']:
+                    existing = self.library.find_by_metadata('dataset_key', key)
+                    if existing:
+                        return {**self._link_memory(existing), 'duplicate': True}
+                # Files are downloaded straight into the new source's folder (up to 10 GB) and
+                # kept; a sample of rows, images, and audio is embedded. All of it runs unlocked.
+                source_id, folder = self.library.reserve_folder()
+                try:
+                    snapshot = huggingface.build(dataset, info, folder, progress)
+                except BaseException:
+                    shutil.rmtree(folder, ignore_errors=True)
+                    raise
+                prepared = self.library.prepare_collection(source_id, folder, snapshot.filename(),
+                                                           snapshot.document().encode('utf-8'), snapshot.chunks(),
+                                                           'dataset', snapshot.metadata(), progress)
+                with _state['lock']:
+                    return self._link_memory(self.library.commit(prepared))
+            return self._json(start_job('Importing ' + dataset.label, import_dataset, locked=False), 202)
         if path == '/api/config':
             if 'ollama_url' in body and body['ollama_url'] != _state['ollama_url']:
                 raise ValueError('Change the Ollama address with --ollama-url when starting the app.')
@@ -430,10 +455,38 @@ class BrainHandler(BaseHTTPRequestHandler):
         keys = {('crystal', c.id) for c in crystals} | {('entity', e.id) for e in entities}
         relations = [_relation_to_dict(r) for r in storage.all_relations()
                      if (r.source_type, r.source_id) in keys and (r.target_type, r.target_id) in keys]
+        words, word_bridges = self._word_map(crystals, sources[:100], source_relations)
         return self._json({'crystals': [_crystal_to_dict(c, storage) for c in crystals],
             'entities': [_entity_to_dict(e) for e in entities], 'sources': sources[:100],
             'relations': relations + source_relations, 'last_scene': _state['last_scene'],
+            'words': words, 'bridges': word_bridges,
             'contradictions': [_contradiction_to_dict(c) for c in storage.open_contradictions()]})
+
+    def _word_map(self, crystals, sources, source_relations):
+        """Distinctive words per main node, and bridges naming the words two nodes share.
+        Sources use all their passages; memories that aren't a source's own summary use their
+        text. Cached until sources, passages, or memories change."""
+        summaries = {r['target_id'] for r in source_relations if r['relation'] == 'source_memory'}
+        documents = {f'source_{s["id"]}': None for s in sources}
+        for c in crystals:
+            if c.id not in summaries:
+                documents[f'crystal_{c.id}'] = ' '.join(filter(None, (c.title, c.summary, c.compressed_narrative)))
+        fingerprint = (self.library.fingerprint(), tuple(sorted(documents)),
+                       max((c.updated_ts or c.created_ts or '' for c in crystals), default=''))
+        cached = _state.get('word_map')
+        if cached and cached[0] == fingerprint:
+            return cached[1], cached[2]
+        texts = self.library.texts([key[7:] for key in documents if key.startswith('source_')])
+        for key in list(documents):
+            if documents[key] is None:
+                documents[key] = texts.get(key[7:], '')
+        top, stats = keywords.profiles(documents)
+        skip = {(f'source_{r["source_id"]}', f'crystal_{r["target_id"]}') for r in source_relations
+                if r['relation'] == 'source_memory'}
+        word_bridges = keywords.bridges(stats, skip=skip)
+        words = {key: [[word, weight] for word, weight in value] for key, value in top.items() if value}
+        _state['word_map'] = (fingerprint, words, word_bridges)
+        return words, word_bridges
 
     def _sse(self, kind, **data):
         self.wfile.write(('data: ' + json.dumps({'type': kind, **data}, default=str) + '\n\n').encode())
@@ -461,7 +514,7 @@ class BrainHandler(BaseHTTPRequestHandler):
         if connections:
             lines.append('Its connections in the map:')
             for c in connections:
-                relation = str(c.get('relation') or 'related').replace('_', ' ')[:40]
+                relation = str(c.get('relation') or 'related').replace('_', ' ')[:120]
                 other = re.sub(r'\s+', ' ', str(c.get('title') or '')).strip()[:120]
                 kind_name = names.get(c.get('type'), 'item').lower()
                 lines.append(f'- {relation} → {other} ({kind_name})')
