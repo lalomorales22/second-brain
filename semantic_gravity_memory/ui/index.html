@@ -9,15 +9,26 @@
   </head>
   <body>
     <div class="shell">
-      <aside class="sidebar">
-        <a class="brand" href="/" aria-label="Second Brain home"
-          ><span class="brand-icon">✳</span
-          ><span
-            >second brain<span class="brand-sub"
-              >A little more of your mind.</span
-            ></span
-          ></a
-        >
+      <aside class="sidebar" id="sidebar">
+        <div class="sidebar-top">
+          <a class="brand" href="/" aria-label="Second Brain home"
+            ><span class="brand-icon">✳</span
+            ><span
+              >second brain<span class="brand-sub"
+                >A little more of your mind.</span
+              ></span
+            ></a
+          ><button
+            class="icon-button panel-toggle"
+            id="btn-toggle-left"
+            aria-controls="sidebar"
+            aria-expanded="true"
+            aria-label="Collapse sidebar"
+            title="Collapse sidebar ( [ )"
+          >
+            ‹
+          </button>
+        </div>
         <button class="primary add-source">
           <span>＋</span> Add to your brain <kbd>⌘ I</kbd>
         </button>
@@ -199,6 +210,16 @@
           <aside id="chat-panel" class="chat-panel">
             <div class="chat-heading">
               <div>
+                <button
+                  class="icon-button panel-toggle"
+                  id="btn-toggle-right"
+                  aria-controls="chat-panel"
+                  aria-expanded="true"
+                  aria-label="Collapse chat"
+                  title="Collapse chat ( ] )"
+                >
+                  ›
+                </button>
                 <span class="chat-symbol">✳</span
                 ><strong>Talk to your brain</strong>
               </div>

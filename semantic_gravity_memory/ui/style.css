@@ -165,7 +165,28 @@ button.primary:hover,
   font-size: 18px;
   font-weight: 600;
   letter-spacing: -0.7px;
-  margin: 0 5px 35px;
+  margin: 0 5px;
+  min-width: 0;
+}
+.sidebar-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+  margin-bottom: 35px;
+}
+.panel-toggle {
+  width: 26px;
+  height: 26px;
+  font-size: 17px;
+  flex-shrink: 0;
+  color: #6f7684;
+}
+.sidebar,
+.chat-panel {
+  transition:
+    width 0.22s ease,
+    padding 0.22s ease;
 }
 .brand-icon {
   color: var(--accent);
@@ -1284,7 +1305,13 @@ dialog::backdrop {
     padding: 24px 8px;
   }
   .brand {
-    margin: 0 8px 26px;
+    margin: 0 8px;
+  }
+  .sidebar-top {
+    margin-bottom: 26px;
+  }
+  #btn-toggle-left {
+    display: none;
   }
   .brand > span:last-child,
   .sidebar > .primary,
@@ -1500,6 +1527,76 @@ dialog::backdrop {
   }
   .frame-grid {
     grid-template-columns: repeat(2, 1fr);
+  }
+}
+/* Collapsible side panels (wide screens; phones stack everything instead). */
+@media (min-width: 721px) {
+  .shell.left-collapsed .sidebar {
+    width: 68px;
+    padding: 24px 8px 16px;
+  }
+  .shell.left-collapsed .sidebar-top {
+    flex-direction: column;
+    gap: 12px;
+    margin-bottom: 26px;
+  }
+  .shell.left-collapsed .brand {
+    margin: 0;
+  }
+  .shell.left-collapsed .brand > span:last-child,
+  .shell.left-collapsed .nav-label,
+  .shell.left-collapsed .nav-item > span:not(:first-child),
+  .shell.left-collapsed .recent-heading,
+  .shell.left-collapsed .recent-sources,
+  .shell.left-collapsed .storage-card,
+  .shell.left-collapsed .sidebar kbd,
+  .shell.left-collapsed #btn-settings > span {
+    display: none;
+  }
+  .shell.left-collapsed .sidebar > .primary {
+    font-size: 0;
+    padding: 11px 0;
+    gap: 0;
+  }
+  .shell.left-collapsed .sidebar > .primary > span {
+    font-size: 19px;
+  }
+  .shell.left-collapsed .nav-item {
+    font-size: 0;
+    justify-content: center;
+    padding: 13px 8px;
+  }
+  .shell.left-collapsed .nav-item > span:first-child {
+    font-size: 20px;
+  }
+  .shell.left-collapsed #btn-settings {
+    justify-content: center;
+  }
+  .shell.right-collapsed .chat-panel {
+    width: 52px;
+  }
+  .shell.right-collapsed .chat-panel > :not(.chat-heading) {
+    display: none;
+  }
+  .shell.right-collapsed .chat-heading {
+    height: auto;
+    flex-direction: column;
+    padding: 18px 0;
+    gap: 14px;
+    border-bottom: 0;
+  }
+  .shell.right-collapsed .chat-heading > div {
+    flex-direction: column;
+    gap: 14px;
+  }
+  .shell.right-collapsed .chat-heading strong,
+  .shell.right-collapsed .chat-heading .badge {
+    display: none;
+  }
+}
+@media (max-width: 720px) {
+  .panel-toggle {
+    display: none;
   }
 }
 @media (prefers-reduced-motion: reduce) {

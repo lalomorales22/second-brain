@@ -599,6 +599,49 @@ async function saveSettings() {
     $("btn-save-settings").disabled = false;
   }
 }
+// Side panels collapse to slim rails; the choice is remembered on this device.
+function setPanelCollapsed(side, collapsed) {
+  const left = side === "left";
+  const name = left ? "sidebar" : "chat";
+  const button = $(left ? "btn-toggle-left" : "btn-toggle-right");
+  document
+    .querySelector(".shell")
+    .classList.toggle(left ? "left-collapsed" : "right-collapsed", collapsed);
+  button.setAttribute("aria-expanded", String(!collapsed));
+  button.setAttribute("aria-label", `${collapsed ? "Expand" : "Collapse"} ${name}`);
+  button.title = `${collapsed ? "Expand" : "Collapse"} ${name} ( ${left ? "[" : "]"} )`;
+  button.textContent = left === collapsed ? "›" : "‹";
+  try {
+    localStorage.setItem(`panel-${side}-collapsed`, collapsed ? "1" : "");
+  } catch {
+    /* storage unavailable (private window); the toggle still works */
+  }
+}
+function togglePanel(side) {
+  const shell = document.querySelector(".shell");
+  setPanelCollapsed(
+    side,
+    !shell.classList.contains(side === "left" ? "left-collapsed" : "right-collapsed"),
+  );
+}
+function restorePanels() {
+  for (const side of ["left", "right"]) {
+    let collapsed = false;
+    try {
+      collapsed = localStorage.getItem(`panel-${side}-collapsed`) === "1";
+    } catch {
+      /* storage unavailable */
+    }
+    setPanelCollapsed(side, collapsed);
+  }
+}
+// Closing node details also lifts the map's focus, so it doesn't stay dimmed.
+function hideNodeInspector() {
+  const panel = $("node-inspector");
+  if (panel.classList.contains("hidden")) return;
+  panel.classList.add("hidden");
+  window.dispatchEvent(new CustomEvent("brain:clear"));
+}
 function inspectNode(detail) {
   const { node, connections } = detail;
   const data = node.data;
@@ -608,7 +651,7 @@ function inspectNode(detail) {
   panel.innerHTML = `<button class="icon-button" aria-label="Close node details">×</button><div class="eyebrow">${escapeHTML(node.type.toUpperCase())}</div><h3>${escapeHTML(data.name || data.title)}</h3><p>${escapeHTML(data.description || data.summary || `${data.mention_count} mentions in your saved memories`)}</p>`;
   panel
     .querySelector("button")
-    .addEventListener("click", () => panel.classList.add("hidden"));
+    .addEventListener("click", hideNodeInspector);
   if (node.type === "source") {
     const button = document.createElement("button");
     button.className = "secondary";
@@ -643,6 +686,33 @@ async function initWorkspace() {
     );
   document.querySelectorAll("dialog").forEach(closeOnOutsideClick);
   $("import-dialog").addEventListener("close", clearFinishedImports);
+  // The node details panel closes on a click anywhere else. This listens in the capture
+  // phase, before the 3D map's own click handler, so clicking another node still reopens
+  // the panel for that node. Drags (orbiting the map) and clicks inside dialogs don't count.
+  let pressedAt = null;
+  document.addEventListener(
+    "pointerdown",
+    (event) => (pressedAt = [event.clientX, event.clientY]),
+    true,
+  );
+  document.addEventListener(
+    "click",
+    (event) => {
+      const panel = $("node-inspector");
+      if (panel.classList.contains("hidden") || panel.contains(event.target)) return;
+      if (event.target.closest?.("dialog")) return;
+      if (
+        pressedAt &&
+        Math.hypot(event.clientX - pressedAt[0], event.clientY - pressedAt[1]) > 5
+      )
+        return;
+      hideNodeInspector();
+    },
+    true,
+  );
+  restorePanels();
+  $("btn-toggle-left").addEventListener("click", () => togglePanel("left"));
+  $("btn-toggle-right").addEventListener("click", () => togglePanel("right"));
   document
     .querySelectorAll("[data-view]")
     .forEach((button) =>
@@ -716,6 +786,7 @@ async function initWorkspace() {
   $("btn-save-settings").addEventListener("click", saveSettings);
   $("btn-ask-source").addEventListener("click", () => {
     $("source-dialog").close();
+    setPanelCollapsed("right", false);
     $("chat-input").value =
       `Tell me about ${state.source.name}. Use the original source and cite it.`;
     $("chat-input").focus();
@@ -736,7 +807,15 @@ async function initWorkspace() {
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "i") {
       event.preventDefault();
       showDialog("import-dialog");
+      return;
     }
+    // [ and ] fold the side panels; Escape closes node details. Never while typing.
+    const typing = event.target.closest?.("input, textarea, select, [contenteditable]");
+    const modifier = event.metaKey || event.ctrlKey || event.altKey;
+    if (typing || modifier || document.querySelector("dialog[open]")) return;
+    if (event.key === "[") togglePanel("left");
+    else if (event.key === "]") togglePanel("right");
+    else if (event.key === "Escape") hideNodeInspector();
   });
   window.addEventListener("brain:select", (event) => inspectNode(event.detail));
   try {
