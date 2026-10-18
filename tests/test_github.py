@@ -67,6 +67,7 @@ class SelectionTests(unittest.TestCase):
         'dist/bundle.js': 'var a=1;',
         'package-lock.json': '{}',
         'assets/logo.png': b'\x89PNG\r\n\x1a\n\x00\x00binary',
+        'assets/icon.svg': '<svg><path d="M12.5 3.2L4.1 9.8 12.5 16.4z"/></svg>',
         'web/app.min.js': 'var a=1;',
         '.env': 'SECRET=1',
         '.github/workflows/ci.yml': 'on: push\n',
@@ -84,7 +85,7 @@ class SelectionTests(unittest.TestCase):
                                                 'docs/guide.md', '.github/workflows/ci.yml']))
         self.assertEqual(snapshot.commit, COMMIT)
         self.assertEqual(dict(snapshot.skipped), {
-            'dependencies or build output': 2, 'lock files': 1, 'binary or media': 2,
+            'dependencies or build output': 2, 'lock files': 1, 'binary or media': 3,
             'minified or generated': 2, 'hidden files': 1, 'large data files': 1})
 
     def test_links_and_escaping_paths_are_never_followed(self):

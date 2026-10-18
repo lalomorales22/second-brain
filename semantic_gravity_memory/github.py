@@ -31,7 +31,7 @@ SKIP_DIRS = {'node_modules', 'vendor', 'bower_components', 'dist', 'build', 'out
 LOCK_FILES = {'package-lock.json', 'yarn.lock', 'pnpm-lock.yaml', 'npm-shrinkwrap.json',
               'cargo.lock', 'poetry.lock', 'pipfile.lock', 'composer.lock', 'gemfile.lock',
               'go.sum', 'packages.lock.json', 'mix.lock', 'pubspec.lock', 'uv.lock', 'bun.lockb'}
-BINARY_EXT = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.ico', '.icns', '.tiff', '.psd',
+BINARY_EXT = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.ico', '.icns', '.tiff', '.psd', '.svg',
               '.mp3', '.mp4', '.mov', '.wav', '.ogg', '.flac', '.webm', '.mkv', '.avi', '.m4a',
               '.zip', '.gz', '.tgz', '.bz2', '.xz', '.7z', '.rar', '.tar', '.jar', '.war',
               '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.woff', '.woff2',
